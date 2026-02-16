@@ -3,7 +3,7 @@ import os
 import datetime
 from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, JobQueue
+from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
 from database.database import add_task, get_user_tasks, delete_task, get_all_tasks
 from core import GeminiChat
 from functools import wraps
@@ -24,14 +24,8 @@ def restricted(func):
         return await func(update, context, *args, **kwargs)
     return wrapped
 
-async def execute_task(context: ContextTypes.DEFAULT_TYPE):
+async def execute_task(bot, chat_id, prompt, user_id):
     """Job to execute a scheduled task."""
-    job = context.job
-    task_data = job.data
-    chat_id = task_data['chat_id']
-    prompt = task_data['prompt']
-    user_id = task_data['user_id']
-    
     logger.info(f"Executing task for user {user_id} in chat {chat_id}: {prompt}")
     
     try:
@@ -40,12 +34,14 @@ async def execute_task(context: ContextTypes.DEFAULT_TYPE):
         response = gemini_chat.send_message(prompt)
         gemini_chat.close()
         
-        await context.bot.send_message(chat_id=chat_id, text=f"🔔 *Scheduled Task Execution*\n\n**Prompt:** {prompt}\n\n**Response:**\n{response}", parse_mode="Markdown")
+        await bot.send_message(chat_id=chat_id, text=f"🔔 *Scheduled Task Execution*\n\n**Prompt:** {prompt}\n\n**Response:**\n{response}", parse_mode="Markdown")
         
     except Exception as e:
         logger.error(f"Failed to execute task: {e}")
-        await context.bot.send_message(chat_id=chat_id, text=f"⚠️ Failed to execute scheduled task '{prompt}': {e}")
-
+        try:
+             await bot.send_message(chat_id=chat_id, text=f"⚠️ Failed to execute scheduled task '{prompt}': {e}")
+        except Exception:
+             pass
 
 @restricted
 async def add_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -96,20 +92,35 @@ async def receive_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         task_id = add_task(conn, (user_id, chat_id, prompt, start_time.strftime("%Y-%m-%d %H:%M:%S"), interval))
         
         # Schedule Job
-        job_queue = context.job_queue
-        # Calculate delay
-        now = datetime.datetime.now()
-        delay = (start_time - now).total_seconds()
+        scheduler = context.bot_data.get('scheduler')
+        if not scheduler:
+             await update.message.reply_text("Scheduler not available.")
+             return ConversationHandler.END
+
+        # Calculate delay/run_date
+        # APScheduler uses run_date for once, or start_date for interval
         
-        if delay < 0:
-             delay = 0 # Run immediately if past
-             
-        data = {'chat_id': chat_id, 'prompt': prompt, 'user_id': user_id, 'task_id': task_id, 'interval': interval}
+        job_id = str(task_id)
         
         if interval > 0:
-            job_queue.run_repeating(execute_task, interval=interval, first=delay, data=data, name=str(task_id))
+            scheduler.add_job(
+                execute_task, 
+                'interval', 
+                seconds=interval, 
+                start_date=start_time, 
+                args=[context.bot, chat_id, prompt, user_id], 
+                id=job_id,
+                replace_existing=True
+            )
         else:
-            job_queue.run_once(execute_task, when=delay, data=data, name=str(task_id))
+            scheduler.add_job(
+                execute_task, 
+                'date', 
+                run_date=start_time, 
+                args=[context.bot, chat_id, prompt, user_id], 
+                id=job_id,
+                replace_existing=True
+            )
             
         await update.message.reply_text(f"Task scheduled!\nID: {task_id}\nPrompt: {prompt}\nStart: {start_time}\nInterval: {interval}s")
         return ConversationHandler.END
@@ -117,6 +128,10 @@ async def receive_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     except ValueError:
         await update.message.reply_text("Invalid number. Please enter an integer for seconds.")
         return ASK_INTERVAL
+    except Exception as e:
+        logger.error(f"Error adding job: {e}")
+        await update.message.reply_text("Error scheduling task.")
+        return ConversationHandler.END
 
 @restricted
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -161,14 +176,16 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 
         delete_task(conn, task_id)
         
-        # Remove from JobQueue
-        current_jobs = context.job_queue.get_jobs_by_name(str(task_id))
-        if current_jobs:
-            for job in current_jobs:
-                job.schedule_removal()
-            await update.message.reply_text(f"Task {task_id} deleted and unscheduled.")
+        # Remove from Scheduler
+        scheduler = context.bot_data.get('scheduler')
+        if scheduler:
+            try:
+                scheduler.remove_job(str(task_id))
+                await update.message.reply_text(f"Task {task_id} deleted and unscheduled.")
+            except Exception: # Job might not exist if it was one-off and finished
+                await update.message.reply_text(f"Task {task_id} deleted from DB.")
         else:
-            await update.message.reply_text(f"Task {task_id} deleted from DB (was not running).")
+            await update.message.reply_text(f"Task {task_id} deleted from DB (Scheduler not found).")
         
     except ValueError:
          await update.message.reply_text("Invalid task ID.")
@@ -176,10 +193,12 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         logger.error(f"Error deleting task: {e}")
         await update.message.reply_text("Error deleting task.")
 
-def load_tasks(application, conn):
+def load_tasks(scheduler, bot, conn):
     """Load tasks from DB and schedule them on startup."""
     tasks = get_all_tasks(conn)
     count = 0
+    now = datetime.datetime.now()
+    
     for task in tasks:
         try:
             task_id = task['id']
@@ -190,32 +209,46 @@ def load_tasks(application, conn):
             interval = task['interval_seconds']
             
             start_time = datetime.datetime.strptime(start_time_str, "%Y-%m-%d %H:%M:%S")
-            now = datetime.datetime.now()
-            
-            data = {'chat_id': chat_id, 'prompt': prompt, 'user_id': user_id, 'task_id': task_id, 'interval': interval}
+            job_id = str(task_id)
             
             # If start time is past
-            delay = (start_time - now).total_seconds()
-            if delay < 0:
-                delay = 0 
-                # If it was a one-time task in past, maybe don't schedule? 
-                # Or schedule immediately?
-                # If interval > 0, we should align strictly or just start now?
-                # For simplicity, if repeating, start now. If one-time in past, ignore or run now?
-                # Let's run now for simplicity.
-                if interval == 0:
-                     # One time task in past. Skip it? or run it?
-                     # Let's skip to avoid spam on restart if it was long ago?
-                     # actually user might miss it. Let's run it.
-                     pass 
-
+            # APScheduler handles past start_date for interval jobs by skipping or running?
+            # For date jobs, if it's past, it might raise error or run immediately if misfire_grace_time is set.
+            # Let's simple check:
+            
             if interval > 0:
-                application.job_queue.run_repeating(execute_task, interval=interval, first=delay, data=data, name=str(task_id))
+                scheduler.add_job(
+                    execute_task, 
+                    'interval', 
+                    seconds=interval, 
+                    start_date=start_time, 
+                    args=[bot, chat_id, prompt, user_id], 
+                    id=job_id,
+                    replace_existing=True
+                )
             else:
-                # If one time and in past, maybe we should check if it was already run?
-                # We don't have status in DB. 
-                # For now, schedule it.
-                 application.job_queue.run_once(execute_task, when=delay, data=data, name=str(task_id))
+                if start_time < now:
+                    # Past one-off task. Skip it? Or run now?
+                    # Let's skip to be safe if it's very old.
+                    # Or maybe running it now is better?
+                    # Let's run now if it's within last hour? Simplify: run now.
+                     scheduler.add_job(
+                        execute_task,
+                        'date',
+                        run_date=datetime.datetime.now() + datetime.timedelta(seconds=5), # Run in 5s
+                        args=[bot, chat_id, prompt, user_id],
+                        id=job_id,
+                        replace_existing=True
+                    )
+                else:
+                    scheduler.add_job(
+                        execute_task,
+                        'date',
+                        run_date=start_time,
+                        args=[bot, chat_id, prompt, user_id],
+                        id=job_id,
+                        replace_existing=True
+                    )
             
             count += 1
         except Exception as e:

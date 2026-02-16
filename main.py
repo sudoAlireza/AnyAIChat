@@ -140,21 +140,7 @@ def create_conv_handler():
 
 
 from bot.tasks import get_add_task_handler, get_task_command_handlers, load_tasks
-
-async def post_init(application: Application) -> None:
-    # We need to access conn here. But post_init only gets application.
-    # We can attach conn to application.bot_data or similar if needed, or just use global/closure.
-    # Since main() has conn, we can pass it if we define post_init inside main or pass it.
-    # However, ApplicationBuilder.post_init takes a coroutine.
-    # Let's try to load tasks after build but before run_polling if possible, OR use a job_queue.run_once(0).
-    # actually run_polling blocks.
-    # We can use application.job_queue.run_once(lambda c: load_tasks_from_db(application, conn), 0)
-    # But connecting to DB inside main and passing to imported function is fine.
-    # Let's just call load_tasks(application, conn) before run_polling.
-    # Wait, load_tasks is async? Yes.
-    # We can't await it in sync main. 
-    # Application.run_polling takes post_init argument.
-    pass
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 def main() -> None:
     persistence = PicklePersistence(filepath="conversation_persistence")
@@ -171,14 +157,13 @@ def main() -> None:
     for cmd in task_cmds:
         application.add_handler(cmd)
 
+    # APScheduler
+    scheduler = AsyncIOScheduler()
+    scheduler.start()
+    application.bot_data['scheduler'] = scheduler
+    
     # Load tasks
-    # application.job_queue is available.
-    # We need to run load_tasks(application, conn).
-    # Since we are in sync main, we can schedule a job to run immediately.
-    async def load_tasks_callback(context):
-        await load_tasks(application, conn)
-        
-    application.job_queue.run_once(load_tasks_callback, 0)
+    load_tasks(scheduler, application.bot, conn)
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
