@@ -34,6 +34,18 @@ def create_table(conn):
             );
             """
         )
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS tasks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+                user_id INTEGER NOT NULL,
+                chat_id INTEGER NOT NULL,
+                prompt TEXT NOT NULL,
+                start_time TEXT NOT NULL,
+                interval_seconds INTEGER DEFAULT 0
+            );
+            """
+        )
     except Error as e:
         print(e)
 
@@ -131,3 +143,76 @@ def delete_conversation_by_id(conn, conversation):
     conn.commit()
 
     return
+
+
+def add_task(conn, task_data):
+    """
+    Create a new task into the tasks table
+    :param conn:
+    :param task_data: (user_id, chat_id, prompt, start_time, interval_seconds)
+    :return: task id
+    """
+    sql = """ INSERT INTO tasks(user_id, chat_id, prompt, start_time, interval_seconds)
+              VALUES(?,?,?,?,?) """
+    cur = conn.cursor()
+    cur.execute(sql, task_data)
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_all_tasks(conn):
+    """
+    Query all tasks
+    :param conn: the Connection object
+    :return list of tasks
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM tasks")
+    rows = cur.fetchall()
+
+    tasks = []
+    for row in rows:
+         tasks.append({
+            "id": row[0],
+            "user_id": row[1],
+            "chat_id": row[2],
+            "prompt": row[3],
+            "start_time": row[4],
+            "interval_seconds": row[5]
+        })
+    return tasks
+
+def get_user_tasks(conn, user_id):
+    """
+    Query tasks for a specific user
+    :param conn: the Connection object
+    :param user_id:
+    :return list of tasks
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT * FROM tasks WHERE user_id=?", (user_id,))
+    rows = cur.fetchall()
+
+    tasks = []
+    for row in rows:
+         tasks.append({
+            "id": row[0],
+            "user_id": row[1],
+            "chat_id": row[2],
+            "prompt": row[3],
+            "start_time": row[4],
+            "interval_seconds": row[5]
+        })
+    return tasks
+
+def delete_task(conn, task_id):
+    """
+    Delete a task by task_id
+    :param conn: the Connection object
+    :param task_id:
+    :return:
+    """
+    sql = "DELETE FROM tasks WHERE id=?"
+    cur = conn.cursor()
+    cur.execute(sql, (task_id,))
+    conn.commit()
