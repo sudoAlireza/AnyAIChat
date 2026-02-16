@@ -11,7 +11,9 @@ from functools import wraps
 logger = logging.getLogger(__name__)
 
 # Stages for Add Task Conversation
-ASK_PROMPT, ASK_TIME, ASK_INTERVAL = range(3)
+# Start at 5 to avoid conflict with conversation_handlers states (0-4)
+CHOOSING = 0
+ASK_PROMPT, ASK_TIME, ASK_INTERVAL = range(5, 8)
 
 def restricted(func):
     @wraps(func)
@@ -64,7 +66,7 @@ async def show_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     else:
         await update.message.reply_text(text=text, reply_markup=reply_markup)
         
-    return -1 # Should stay in CHOOSING state or wherever this was called from
+    return CHOOSING
 
 @restricted
 async def add_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -124,7 +126,7 @@ async def receive_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         scheduler = getattr(context.application, 'scheduler', None)
         if not scheduler:
              await update.message.reply_text("Scheduler not available.")
-             return -1 # Back to Start
+             return CHOOSING
 
         # Calculate delay/run_date
         # APScheduler uses run_date for once, or start_date for interval
@@ -164,7 +166,7 @@ async def receive_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         # We will return 'CHOOSING' (variable) if we import it or just return -1 if we can't.
         # Actually better to import it or pass it.
         # For now let's just use a constant.
-        return 0 # CHOOSING
+        return CHOOSING
         
     except ValueError:
         await update.message.reply_text("Invalid number. Please enter an integer for seconds.")
@@ -172,12 +174,12 @@ async def receive_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     except Exception as e:
         logger.error(f"Error adding job: {e}")
         await update.message.reply_text("Error scheduling task.")
-        return 0
+        return CHOOSING
 
 @restricted
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Task creation cancelled.")
-    return 0 # CHOOSING
+    return CHOOSING
 
 @restricted
 async def list_tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
@@ -196,7 +198,7 @@ async def list_tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
             await query.edit_message_text(text, reply_markup=reply_markup)
         else:
             await update.message.reply_text(text, reply_markup=reply_markup)
-        return 0
+        return CHOOSING
         
     # Using edit_message for list might be long. Send new message?
     # Or just list one by one with delete button?
@@ -221,7 +223,7 @@ async def list_tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE,
     else:
         await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_markup)
         
-    return 0
+    return CHOOSING
 
 @restricted
 async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
@@ -247,7 +249,7 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     except Exception as e:
         logger.error(f"Error deleting task: {e}")
         await query.edit_message_text("Error deleting task.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Tasks", callback_data="Manage_Tasks")]]))
-        return 0
+        return CHOOSING
 
 def load_tasks(scheduler, bot, conn):
     """Load tasks from DB and schedule them on startup."""
