@@ -68,6 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             ),
         ],
         [InlineKeyboardButton(_("Chat History"), callback_data="PAGE#1")],
+        [InlineKeyboardButton(_("Manage Tasks"), callback_data="Manage_Tasks")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -146,6 +147,7 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
         ],
         [InlineKeyboardButton(_("Image Description"), callback_data="Image_Description")],
         [InlineKeyboardButton(_("Chat History"), callback_data="PAGE#1")],
+        [InlineKeyboardButton(_("Manage Tasks"), callback_data="Manage_Tasks")],
         [InlineKeyboardButton(_("Start Again"), callback_data="Start_Again")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)

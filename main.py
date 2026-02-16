@@ -58,6 +58,19 @@ def entry_points():
     ]
 
 
+from bot.tasks import (
+    show_tasks_menu, 
+    add_task_start, 
+    receive_prompt, 
+    receive_time, 
+    receive_interval, 
+    list_tasks_handler, 
+    delete_task_handler,
+    ASK_PROMPT, 
+    ASK_TIME, 
+    ASK_INTERVAL
+)
+
 def states():
     return {
         CHOOSING: [
@@ -72,6 +85,22 @@ def states():
             CallbackQueryHandler(
                 lambda update, context: get_conversation_history(update, context, conn),
                 pattern="^PAGE#",
+            ),
+            CallbackQueryHandler(
+                lambda update, context: show_tasks_menu(update, context),
+                pattern="^Manage_Tasks$",
+            ),
+             CallbackQueryHandler(
+                lambda update, context: add_task_start(update, context),
+                pattern="^Add_Task$",
+            ),
+            CallbackQueryHandler(
+                lambda update, context: list_tasks_handler(update, context, conn),
+                pattern="^List_Tasks$",
+            ),
+            CallbackQueryHandler(
+                lambda update, context: delete_task_handler(update, context, conn),
+                pattern="^Delete_Task_",
             ),
             CallbackQueryHandler(
                 lambda update, context: done(update, context),
@@ -112,6 +141,9 @@ def states():
                 reply_to_image_conversation,
             )
         ],
+        ASK_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_prompt)],
+        ASK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_time)],
+        ASK_INTERVAL: [MessageHandler(filters.TEXT & ~filters.COMMAND, lambda u, c: receive_interval(u, c, conn))],
     }
 
 
@@ -150,17 +182,21 @@ def main() -> None:
     application.add_handler(conv_handler)
     
     # Task Handlers
-    task_conv_handler = get_add_task_handler(conn)
-    application.add_handler(task_conv_handler)
+    # task_conv_handler = get_add_task_handler(conn) # Removed as integrated into main conv
+    # application.add_handler(task_conv_handler)
     
-    task_cmds = get_task_command_handlers(conn)
-    for cmd in task_cmds:
-        application.add_handler(cmd)
-
+    # task_cmds = get_task_command_handlers(conn)
+    # for cmd in task_cmds:
+    #     application.add_handler(cmd)
+    # We can keep command handlers for shortcut/debugging, but the user requested management via buttons.
+    # Let's keep them as alternative access points if they don't conflict. 
+    # But get_add_task_handler creates a NEW ConversationHandler which might conflict with the main one.
+    # So we should remove `task_conv_handler`.
+    
     # APScheduler
     scheduler = AsyncIOScheduler()
     scheduler.start()
-    application.bot_data['scheduler'] = scheduler
+    application.scheduler = scheduler
     
     # Load tasks
     load_tasks(scheduler, application.bot, conn)

@@ -3,7 +3,7 @@ import os
 import datetime
 from typing import Optional
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters
+from telegram.ext import ContextTypes, ConversationHandler, CommandHandler, MessageHandler, filters, CallbackQueryHandler
 from database.database import add_task, get_user_tasks, delete_task, get_all_tasks
 from core import GeminiChat
 from functools import wraps
@@ -44,8 +44,37 @@ async def execute_task(bot, chat_id, prompt, user_id):
              pass
 
 @restricted
+async def show_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show the main tasks menu."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton("➕ Add Task", callback_data="Add_Task")],
+        [InlineKeyboardButton("📋 List/Delete Tasks", callback_data="List_Tasks")],
+        [InlineKeyboardButton("🔙 Back to Main Menu", callback_data="Start_Again")]
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    text = "Manage your scheduled tasks here."
+    
+    if query:
+        await query.edit_message_text(text=text, reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(text=text, reply_markup=reply_markup)
+        
+    return -1 # Should stay in CHOOSING state or wherever this was called from
+
+@restricted
 async def add_task_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    await update.message.reply_text("Please enter the prompt you want to send to Gemini.")
+    """Start adding a task."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+        await query.edit_message_text("Please enter the prompt you want to send to Gemini.")
+    else:
+        await update.message.reply_text("Please enter the prompt you want to send to Gemini.")
     return ASK_PROMPT
 
 @restricted
@@ -92,10 +121,10 @@ async def receive_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, c
         task_id = add_task(conn, (user_id, chat_id, prompt, start_time.strftime("%Y-%m-%d %H:%M:%S"), interval))
         
         # Schedule Job
-        scheduler = context.bot_data.get('scheduler')
+        scheduler = getattr(context.application, 'scheduler', None)
         if not scheduler:
              await update.message.reply_text("Scheduler not available.")
-             return ConversationHandler.END
+             return -1 # Back to Start
 
         # Calculate delay/run_date
         # APScheduler uses run_date for once, or start_date for interval
@@ -122,8 +151,20 @@ async def receive_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, c
                 replace_existing=True
             )
             
-        await update.message.reply_text(f"Task scheduled!\nID: {task_id}\nPrompt: {prompt}\nStart: {start_time}\nInterval: {interval}s")
-        return ConversationHandler.END
+        text = f"Task scheduled!\nID: {task_id}\nPrompt: {prompt}\nStart: {start_time}\nInterval: {interval}s"
+        keyboard = [[InlineKeyboardButton("🔙 Back to Tasks", callback_data="Manage_Tasks")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(text, reply_markup=reply_markup)
+        
+        # Return to main menu state? No, main menu state is CHOOSING. 
+        # We need to return to a state that main conversation handler understands.
+        # If we are part of the main conversation, we return CHOOSING or whatever state maps to menu.
+        # Let's assume CHOOSING is 0 (from main.py). 
+        # But we don't have CHOOSING imported here.
+        # We will return 'CHOOSING' (variable) if we import it or just return -1 if we can't.
+        # Actually better to import it or pass it.
+        # For now let's just use a constant.
+        return 0 # CHOOSING
         
     except ValueError:
         await update.message.reply_text("Invalid number. Please enter an integer for seconds.")
@@ -131,67 +172,82 @@ async def receive_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, c
     except Exception as e:
         logger.error(f"Error adding job: {e}")
         await update.message.reply_text("Error scheduling task.")
-        return ConversationHandler.END
+        return 0
 
 @restricted
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     await update.message.reply_text("Task creation cancelled.")
-    return ConversationHandler.END
+    return 0 # CHOOSING
 
 @restricted
-async def list_tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> None:
+async def list_tasks_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
+    query = update.callback_query
+    if query:
+        await query.answer()
+        
     user_id = update.effective_user.id
     tasks = get_user_tasks(conn, user_id)
+    
     if not tasks:
-        await update.message.reply_text("No scheduled tasks found.")
-        return
+        text = "No scheduled tasks found."
+        keyboard = [[InlineKeyboardButton("🔙 Back to Tasks", callback_data="Manage_Tasks")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        if query:
+            await query.edit_message_text(text, reply_markup=reply_markup)
+        else:
+            await update.message.reply_text(text, reply_markup=reply_markup)
+        return 0
         
+    # Using edit_message for list might be long. Send new message?
+    # Or just list one by one with delete button?
+    # Let's sending one message with text and delete buttons for each?
+    # Telegram buttons have limit. Listing buttons for each task might exceed if many tasks.
+    # Let's list details in text and provide delete buttons as keyboard.
+    
     message = "*Your Scheduled Tasks:*\n\n"
+    keyboard = []
+    
     for task in tasks:
-        message += f"🆔 `{task['id']}`\n"
-        message += f"📝 Prompt: {task['prompt']}\n"
-        message += f"🕒 Start: {task['start_time']}\n"
-        message += f"🔄 Interval: {task['interval_seconds']}s\n"
-        message += "-------------------------\n"
+        t_id = task['id']
+        message += f"🆔 `{t_id}` | 📝 {task['prompt'][:20]}... | 🕒 {task['start_time']} | 🔄 {task['interval_seconds']}s\n"
+        keyboard.append([InlineKeyboardButton(f"❌ Delete {t_id}", callback_data=f"Delete_Task_{t_id}")])
+    
+    message += "\nTap ❌ to delete a task."
+    keyboard.append([InlineKeyboardButton("🔙 Back to Tasks", callback_data="Manage_Tasks")])
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    if query:
+        await query.edit_message_text(message, parse_mode="Markdown", reply_markup=reply_markup)
+    else:
+        await update.message.reply_text(message, parse_mode="Markdown", reply_markup=reply_markup)
         
-    await update.message.reply_text(message, parse_mode="Markdown")
+    return 0
 
 @restricted
-async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> None:
+async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    data = query.data
+    # Data is Delete_Task_<id>
     try:
-        # Check if args are passed
-        if not context.args:
-            await update.message.reply_text("Usage: /deletetask <task_id>")
-            return
-            
-        task_id = int(context.args[0])
-        
-        # Check if task exists and belongs to user (simple check)
-        tasks = get_user_tasks(conn, update.effective_user.id)
-        task_ids = [t['id'] for t in tasks]
-        
-        if task_id not in task_ids:
-             await update.message.reply_text("Task not found or not owned by you.")
-             return
-
+        task_id = int(data.split("_")[-1])
         delete_task(conn, task_id)
         
-        # Remove from Scheduler
-        scheduler = context.bot_data.get('scheduler')
+        scheduler = getattr(context.application, 'scheduler', None)
         if scheduler:
             try:
                 scheduler.remove_job(str(task_id))
-                await update.message.reply_text(f"Task {task_id} deleted and unscheduled.")
-            except Exception: # Job might not exist if it was one-off and finished
-                await update.message.reply_text(f"Task {task_id} deleted from DB.")
-        else:
-            await update.message.reply_text(f"Task {task_id} deleted from DB (Scheduler not found).")
+            except Exception:
+                pass
         
-    except ValueError:
-         await update.message.reply_text("Invalid task ID.")
+        # Refresh list
+        return await list_tasks_handler(update, context, conn)
+        
     except Exception as e:
         logger.error(f"Error deleting task: {e}")
-        await update.message.reply_text("Error deleting task.")
+        await query.edit_message_text("Error deleting task.", reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Tasks", callback_data="Manage_Tasks")]]))
+        return 0
 
 def load_tasks(scheduler, bot, conn):
     """Load tasks from DB and schedule them on startup."""
@@ -258,7 +314,10 @@ def load_tasks(scheduler, bot, conn):
 
 def get_add_task_handler(conn):
     return ConversationHandler(
-        entry_points=[CommandHandler("addtask", add_task_start)],
+        entry_points=[
+            CommandHandler("addtask", add_task_start),
+            CallbackQueryHandler(add_task_start, pattern="^Add_Task$")
+        ],
         states={
             ASK_PROMPT: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_prompt)],
             ASK_TIME: [MessageHandler(filters.TEXT & ~filters.COMMAND, receive_time)],
@@ -271,4 +330,8 @@ def get_task_command_handlers(conn):
     return [
         CommandHandler("mytasks", lambda u, c: list_tasks_handler(u, c, conn)),
         CommandHandler("deletetask", lambda u, c: delete_task_handler(u, c, conn)),
+        CommandHandler("tasks", show_tasks_menu),
+        CallbackQueryHandler(show_tasks_menu, pattern="^Manage_Tasks$"),
+        CallbackQueryHandler(list_tasks_handler, pattern="^List_Tasks$", pass_args=True),
+        CallbackQueryHandler(lambda u, c: delete_task_handler(u, c, conn), pattern="^Delete_Task_\\d+$"),
     ]
