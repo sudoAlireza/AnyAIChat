@@ -123,6 +123,7 @@ docker-compose down
 - Engage in online conversations with Google's Gemini AI chatbot
 - Maintain conversation history for continuing or initiating new discussions
 - Send images with captions to receive responses based on the image content. For example, the bot can read text within images and convert it to text.
+- **Schedule automated tasks** to send prompts to Gemini at specific times with customizable intervals (once, daily, weekly) - [Learn more](TASKS_FEATURE.md)
 
 ## Internationalization (i18n)
 

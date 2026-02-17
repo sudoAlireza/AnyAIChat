@@ -167,3 +167,103 @@ msgstr "Refresh"
 msgid "Until next time!"
 msgstr "Until next time!"
 
+
+# Task-related translations
+msgid "📅 Tasks"
+msgstr "📅 Tasks"
+
+msgid "➕ Add New Task"
+msgstr "➕ Add New Task"
+
+msgid "📋 List Tasks"
+msgstr "📋 List Tasks"
+
+msgid "🔙 Back to Menu"
+msgstr "🔙 Back to Menu"
+
+msgid "📅 *Tasks Menu*\n\nManage your scheduled tasks here. You can add new tasks, view existing ones, or delete them."
+msgstr "📅 *Tasks Menu*\n\nManage your scheduled tasks here. You can add new tasks, view existing ones, or delete them."
+
+msgid "📝 *Add New Task*\n\nPlease enter the prompt you want to send to Gemini:"
+msgstr "📝 *Add New Task*\n\nPlease enter the prompt you want to send to Gemini:"
+
+msgid "Cancel"
+msgstr "Cancel"
+
+msgid "Prompt is too long. Please keep it under 1000 characters."
+msgstr "Prompt is too long. Please keep it under 1000 characters."
+
+msgid "⏰ *Set Execution Time*\n\nPlease enter the time when you want this task to run (format: HH:MM, e.g., 09:30 or 14:00):"
+msgstr "⏰ *Set Execution Time*\n\nPlease enter the time when you want this task to run (format: HH:MM, e.g., 09:30 or 14:00):"
+
+msgid "Invalid time format. Please use HH:MM format (e.g., 09:30 or 14:00):"
+msgstr "Invalid time format. Please use HH:MM format (e.g., 09:30 or 14:00):"
+
+msgid "🔄 *Set Interval*\n\nHow often should this task run?"
+msgstr "🔄 *Set Interval*\n\nHow often should this task run?"
+
+msgid "Once"
+msgstr "Once"
+
+msgid "Daily"
+msgstr "Daily"
+
+msgid "Weekly"
+msgstr "Weekly"
+
+msgid "once"
+msgstr "once"
+
+msgid "daily"
+msgstr "daily"
+
+msgid "weekly (every Monday)"
+msgstr "weekly (every Monday)"
+
+msgid "weekly"
+msgstr "weekly"
+
+msgid "✅ *Task Created Successfully!*\n\n*Prompt:* {prompt}\n*Time:* {run_time}\n*Interval:* {interval_text}"
+msgstr "✅ *Task Created Successfully!*\n\n*Prompt:* {prompt}\n*Time:* {run_time}\n*Interval:* {interval_text}"
+
+msgid "❌ Error creating task. Please try again."
+msgstr "❌ Error creating task. Please try again."
+
+msgid "📋 View Tasks"
+msgstr "📋 View Tasks"
+
+msgid "📋 *Your Tasks*\n\nYou don't have any scheduled tasks yet."
+msgstr "📋 *Your Tasks*\n\nYou don't have any scheduled tasks yet."
+
+msgid "➕ Add Task"
+msgstr "➕ Add Task"
+
+msgid "🔙 Back"
+msgstr "🔙 Back"
+
+msgid "📋 *Your Scheduled Tasks*\n\n"
+msgstr "📋 *Your Scheduled Tasks*\n\n"
+
+msgid "🗑️ Delete Task #{task['id']}"
+msgstr "🗑️ Delete Task #{task['id']}"
+
+msgid "❌ Error retrieving tasks. Please try again."
+msgstr "❌ Error retrieving tasks. Please try again."
+
+msgid "✅ Task deleted successfully!"
+msgstr "✅ Task deleted successfully!"
+
+msgid "❌ Task not found or already deleted."
+msgstr "❌ Task not found or already deleted."
+
+msgid "❌ Error deleting task."
+msgstr "❌ Error deleting task."
+
+msgid "🔔 *Scheduled Task Result*\n\n*Prompt:* {prompt}\n\n*Response:*\n{response}"
+msgstr "🔔 *Scheduled Task Result*\n\n*Prompt:* {prompt}\n\n*Response:*\n{response}"
+
+msgid "❌ Error executing scheduled task. Please try again later."
+msgstr "❌ Error executing scheduled task. Please try again later."
+
+msgid "Tasks Menu"
+msgstr "Tasks Menu"

@@ -168,3 +168,103 @@ msgstr "Обновить"
 msgid "Until next time!"
 msgstr "До скорого!"
 
+
+# Task-related translations
+msgid "📅 Tasks"
+msgstr "📅 Задачи"
+
+msgid "➕ Add New Task"
+msgstr "➕ Добавить задачу"
+
+msgid "📋 List Tasks"
+msgstr "📋 Список задач"
+
+msgid "🔙 Back to Menu"
+msgstr "🔙 Назад в меню"
+
+msgid "📅 *Tasks Menu*\n\nManage your scheduled tasks here. You can add new tasks, view existing ones, or delete them."
+msgstr "📅 *Меню задач*\n\nУправляйте своими запланированными задачами здесь. Вы можете добавлять новые задачи, просматривать существующие или удалять их."
+
+msgid "📝 *Add New Task*\n\nPlease enter the prompt you want to send to Gemini:"
+msgstr "📝 *Добавить новую задачу*\n\nПожалуйста, введите запрос, который вы хотите отправить Gemini:"
+
+msgid "Cancel"
+msgstr "Отмена"
+
+msgid "Prompt is too long. Please keep it under 1000 characters."
+msgstr "Запрос слишком длинный. Пожалуйста, сократите его до 1000 символов."
+
+msgid "⏰ *Set Execution Time*\n\nPlease enter the time when you want this task to run (format: HH:MM, e.g., 09:30 or 14:00):"
+msgstr "⏰ *Установить время выполнения*\n\nПожалуйста, введите время, когда вы хотите запустить эту задачу (формат: ЧЧ:ММ, например, 09:30 или 14:00):"
+
+msgid "Invalid time format. Please use HH:MM format (e.g., 09:30 or 14:00):"
+msgstr "Неверный формат времени. Пожалуйста, используйте формат ЧЧ:ММ (например, 09:30 или 14:00):"
+
+msgid "🔄 *Set Interval*\n\nHow often should this task run?"
+msgstr "🔄 *Установить интервал*\n\nКак часто должна выполняться эта задача?"
+
+msgid "Once"
+msgstr "Один раз"
+
+msgid "Daily"
+msgstr "Ежедневно"
+
+msgid "Weekly"
+msgstr "Еженедельно"
+
+msgid "once"
+msgstr "один раз"
+
+msgid "daily"
+msgstr "ежедневно"
+
+msgid "weekly (every Monday)"
+msgstr "еженедельно (каждый понедельник)"
+
+msgid "weekly"
+msgstr "еженедельно"
+
+msgid "✅ *Task Created Successfully!*\n\n*Prompt:* {prompt}\n*Time:* {run_time}\n*Interval:* {interval_text}"
+msgstr "✅ *Задача успешно создана!*\n\n*Запрос:* {prompt}\n*Время:* {run_time}\n*Интервал:* {interval_text}"
+
+msgid "❌ Error creating task. Please try again."
+msgstr "❌ Ошибка создания задачи. Пожалуйста, попробуйте еще раз."
+
+msgid "📋 View Tasks"
+msgstr "📋 Просмотр задач"
+
+msgid "📋 *Your Tasks*\n\nYou don't have any scheduled tasks yet."
+msgstr "📋 *Ваши задачи*\n\nУ вас пока нет запланированных задач."
+
+msgid "➕ Add Task"
+msgstr "➕ Добавить задачу"
+
+msgid "🔙 Back"
+msgstr "🔙 Назад"
+
+msgid "📋 *Your Scheduled Tasks*\n\n"
+msgstr "📋 *Ваши запланированные задачи*\n\n"
+
+msgid "🗑️ Delete Task #{task['id']}"
+msgstr "🗑️ Удалить задачу #{task['id']}"
+
+msgid "❌ Error retrieving tasks. Please try again."
+msgstr "❌ Ошибка получения задач. Пожалуйста, попробуйте еще раз."
+
+msgid "✅ Task deleted successfully!"
+msgstr "✅ Задача успешно удалена!"
+
+msgid "❌ Task not found or already deleted."
+msgstr "❌ Задача не найдена или уже удалена."
+
+msgid "❌ Error deleting task."
+msgstr "❌ Ошибка удаления задачи."
+
+msgid "🔔 *Scheduled Task Result*\n\n*Prompt:* {prompt}\n\n*Response:*\n{response}"
+msgstr "🔔 *Результат запланированной задачи*\n\n*Запрос:* {prompt}\n\n*Ответ:*\n{response}"
+
+msgid "❌ Error executing scheduled task. Please try again later."
+msgstr "❌ Ошибка выполнения запланированной задачи. Пожалуйста, попробуйте позже."
+
+msgid "Tasks Menu"
+msgstr "Меню задач"

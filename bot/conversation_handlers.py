@@ -68,6 +68,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
             ),
         ],
         [InlineKeyboardButton(_("Chat History"), callback_data="PAGE#1")],
+        [InlineKeyboardButton(_("📅 Tasks"), callback_data="Tasks_Menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await update.message.reply_text(
@@ -146,6 +147,7 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
         ],
         [InlineKeyboardButton(_("Image Description"), callback_data="Image_Description")],
         [InlineKeyboardButton(_("Chat History"), callback_data="PAGE#1")],
+        [InlineKeyboardButton(_("📅 Tasks"), callback_data="Tasks_Menu")],
         [InlineKeyboardButton(_("Start Again"), callback_data="Start_Again")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -591,3 +593,372 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     user_data.clear()
     return CHOOSING
+
+
+# Task scheduling globals
+_scheduler = None
+_bot_application = None
+
+TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL = range(5, 9)
+
+
+def set_scheduler(scheduler, application):
+    """Set the global scheduler and bot application instances"""
+    global _scheduler, _bot_application
+    _scheduler = scheduler
+    _bot_application = application
+
+
+async def send_scheduled_task(user_id: int, prompt: str):
+    """Execute scheduled task: send prompt to Gemini and send response to user"""
+    try:
+        logger.info(f"Executing scheduled task for user {user_id} with prompt: {prompt[:50]}...")
+        
+        gemini_chat = GeminiChat(gemini_token=os.getenv("GEMINI_API_TOKEN"))
+        gemini_chat.start_chat()
+        response = gemini_chat.send_message(prompt)
+        gemini_chat.close()
+        
+        keyboard = [[InlineKeyboardButton(_("Tasks Menu"), callback_data="Tasks_Menu")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        message = f"🔔 *Scheduled Task Result*\n\n*Prompt:* {prompt}\n\n*Response:*\n{response}"
+        
+        try:
+            await _bot_application.bot.send_message(
+                chat_id=user_id,
+                text=message,
+                parse_mode="Markdown",
+                reply_markup=reply_markup,
+            )
+        except Exception as e:
+            logger.warning(f"Error sending with markdown: {e}")
+            await _bot_application.bot.send_message(
+                chat_id=user_id,
+                text=strip_markdown(message),
+                reply_markup=reply_markup,
+            )
+            
+    except Exception as e:
+        logger.error(f"Error executing scheduled task: {e}")
+        try:
+            await _bot_application.bot.send_message(
+                chat_id=user_id,
+                text=_("❌ Error executing scheduled task. Please try again later."),
+            )
+        except Exception as send_error:
+            logger.error(f"Failed to send error message: {send_error}")
+
+
+def schedule_task_job(task_id: int, user_id: int, prompt: str, run_time: str, interval: str):
+    """Schedule a task job with APScheduler"""
+    try:
+        from datetime import datetime
+        
+        job_id = f"task_{task_id}"
+        
+        # Parse run_time (format: HH:MM)
+        hour, minute = map(int, run_time.split(':'))
+        
+        if interval == "once":
+            # Schedule for next occurrence of this time
+            run_date = datetime.now().replace(hour=hour, minute=minute, second=0, microsecond=0)
+            if run_date <= datetime.now():
+                from datetime import timedelta
+                run_date += timedelta(days=1)
+            
+            _scheduler.add_job(
+                send_scheduled_task,
+                'date',
+                run_date=run_date,
+                args=[user_id, prompt],
+                id=job_id,
+                replace_existing=True,
+            )
+            logger.info(f"Scheduled one-time task {job_id} for {run_date}")
+            
+        elif interval == "daily":
+            _scheduler.add_job(
+                send_scheduled_task,
+                'cron',
+                hour=hour,
+                minute=minute,
+                args=[user_id, prompt],
+                id=job_id,
+                replace_existing=True,
+            )
+            logger.info(f"Scheduled daily task {job_id} at {run_time}")
+            
+        elif interval == "weekly":
+            _scheduler.add_job(
+                send_scheduled_task,
+                'cron',
+                day_of_week='mon',
+                hour=hour,
+                minute=minute,
+                args=[user_id, prompt],
+                id=job_id,
+                replace_existing=True,
+            )
+            logger.info(f"Scheduled weekly task {job_id} at {run_time}")
+            
+    except Exception as e:
+        logger.error(f"Error scheduling task: {e}")
+
+
+@restricted
+async def open_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Open tasks menu"""
+    query = update.callback_query
+    await query.answer()
+    
+    logger.info("Received callback: Tasks_Menu")
+    
+    keyboard = [
+        [InlineKeyboardButton(_("➕ Add New Task"), callback_data="Tasks_Add")],
+        [InlineKeyboardButton(_("📋 List Tasks"), callback_data="Tasks_List")],
+        [InlineKeyboardButton(_("🔙 Back to Menu"), callback_data="Start_Again")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    msg = await query.edit_message_text(
+        text=_("📅 *Tasks Menu*\n\nManage your scheduled tasks here. You can add new tasks, view existing ones, or delete them."),
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    context.user_data["to_delete_message"] = msg
+    
+    return TASKS_MENU
+
+
+@restricted
+async def start_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Start adding a new task"""
+    query = update.callback_query
+    await query.answer()
+    
+    logger.info("Received callback: Tasks_Add")
+    
+    keyboard = [[InlineKeyboardButton(_("Cancel"), callback_data="Tasks_Menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    msg = await query.edit_message_text(
+        text=_("📝 *Add New Task*\n\nPlease enter the prompt you want to send to Gemini:"),
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    context.user_data["to_delete_message"] = msg
+    
+    return TASKS_ADD_PROMPT
+
+
+@restricted
+async def handle_task_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle task prompt input"""
+    prompt = update.message.text
+    
+    if len(prompt) > 1000:
+        await update.message.reply_text(_("Prompt is too long. Please keep it under 1000 characters."))
+        return TASKS_ADD_PROMPT
+    
+    context.user_data["task_prompt"] = prompt
+    
+    keyboard = [[InlineKeyboardButton(_("Cancel"), callback_data="Tasks_Menu")]]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        text=_("⏰ *Set Execution Time*\n\nPlease enter the time when you want this task to run (format: HH:MM, e.g., 09:30 or 14:00):"),
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    
+    return TASKS_ADD_TIME
+
+
+@restricted
+async def handle_task_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle task time input"""
+    time_str = update.message.text.strip()
+    
+    # Validate time format
+    import re
+    if not re.match(r'^([0-1]?[0-9]|2[0-3]):[0-5][0-9]$', time_str):
+        await update.message.reply_text(_("Invalid time format. Please use HH:MM format (e.g., 09:30 or 14:00):"))
+        return TASKS_ADD_TIME
+    
+    context.user_data["task_time"] = time_str
+    
+    keyboard = [
+        [InlineKeyboardButton(_("Once"), callback_data="Tasks_Interval_once")],
+        [InlineKeyboardButton(_("Daily"), callback_data="Tasks_Interval_daily")],
+        [InlineKeyboardButton(_("Weekly"), callback_data="Tasks_Interval_weekly")],
+        [InlineKeyboardButton(_("Cancel"), callback_data="Tasks_Menu")],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    
+    await update.message.reply_text(
+        text=_("🔄 *Set Interval*\n\nHow often should this task run?"),
+        reply_markup=reply_markup,
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    
+    return TASKS_ADD_INTERVAL
+
+
+@restricted
+async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
+    """Handle task interval selection and save task"""
+    query = update.callback_query
+    await query.answer()
+    
+    interval = query.data.split("_")[-1]
+    
+    user_id = query.from_user.id
+    prompt = context.user_data.get("task_prompt")
+    run_time = context.user_data.get("task_time")
+    
+    try:
+        from database.database import create_task
+        
+        task = (user_id, prompt, run_time, interval)
+        task_id = create_task(conn, task)
+        
+        # Schedule the task
+        schedule_task_job(task_id, user_id, prompt, run_time, interval)
+        
+        # Clear user data
+        context.user_data.pop("task_prompt", None)
+        context.user_data.pop("task_time", None)
+        
+        interval_text = {
+            "once": _("once"),
+            "daily": _("daily"),
+            "weekly": _("weekly (every Monday)"),
+        }.get(interval, interval)
+        
+        keyboard = [
+            [InlineKeyboardButton(_("📋 View Tasks"), callback_data="Tasks_List")],
+            [InlineKeyboardButton(_("🔙 Back to Menu"), callback_data="Start_Again")],
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        msg = await query.edit_message_text(
+            text=_(f"✅ *Task Created Successfully!*\n\n*Prompt:* {prompt}\n*Time:* {run_time}\n*Interval:* {interval_text}"),
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        context.user_data["to_delete_message"] = msg
+        
+    except Exception as e:
+        logger.error(f"Error creating task: {e}")
+        await query.edit_message_text(_("❌ Error creating task. Please try again."))
+    
+    return TASKS_MENU
+
+
+@restricted
+async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
+    """List all tasks for the user"""
+    query = update.callback_query
+    await query.answer()
+    
+    logger.info("Received callback: Tasks_List")
+    
+    user_id = query.from_user.id
+    
+    try:
+        from database.database import get_user_tasks
+        
+        tasks = get_user_tasks(conn, user_id)
+        
+        if not tasks:
+            keyboard = [
+                [InlineKeyboardButton(_("➕ Add Task"), callback_data="Tasks_Add")],
+                [InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")],
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            
+            msg = await query.edit_message_text(
+                text=_("📋 *Your Tasks*\n\nYou don't have any scheduled tasks yet."),
+                reply_markup=reply_markup,
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            context.user_data["to_delete_message"] = msg
+            return TASKS_MENU
+        
+        # Build task list message
+        message = _("📋 *Your Scheduled Tasks*\n\n")
+        keyboard = []
+        
+        for task in tasks:
+            interval_emoji = {"once": "🔔", "daily": "📅", "weekly": "📆"}.get(task["interval"], "⏰")
+            interval_text = {
+                "once": _("once"),
+                "daily": _("daily"),
+                "weekly": _("weekly"),
+            }.get(task["interval"], task["interval"])
+            
+            prompt_preview = task["prompt"][:50] + "..." if len(task["prompt"]) > 50 else task["prompt"]
+            message += f"{interval_emoji} *Task #{task['id']}*\n"
+            message += f"   Prompt: {prompt_preview}\n"
+            message += f"   Time: {task['run_time']} ({interval_text})\n\n"
+            
+            keyboard.append([
+                InlineKeyboardButton(
+                    _(f"🗑️ Delete Task #{task['id']}"),
+                    callback_data=f"TASK_DELETE#{task['id']}"
+                )
+            ])
+        
+        keyboard.append([InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")])
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        msg = await query.edit_message_text(
+            text=message,
+            reply_markup=reply_markup,
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        context.user_data["to_delete_message"] = msg
+        
+    except Exception as e:
+        logger.error(f"Error listing tasks: {e}")
+        await query.edit_message_text(_("❌ Error retrieving tasks. Please try again."))
+    
+    return TASKS_MENU
+
+
+@restricted
+async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
+    """Delete a task"""
+    query = update.callback_query
+    await query.answer()
+    
+    task_id = int(query.data.split("#")[1])
+    user_id = query.from_user.id
+    
+    try:
+        from database.database import delete_task_by_id
+        
+        deleted = delete_task_by_id(conn, task_id, user_id)
+        
+        if deleted:
+            # Remove from scheduler
+            job_id = f"task_{task_id}"
+            try:
+                _scheduler.remove_job(job_id)
+                logger.info(f"Removed scheduled job {job_id}")
+            except Exception as e:
+                logger.warning(f"Job {job_id} not found in scheduler: {e}")
+            
+            await query.answer(_("✅ Task deleted successfully!"), show_alert=True)
+        else:
+            await query.answer(_("❌ Task not found or already deleted."), show_alert=True)
+        
+        # Refresh task list
+        return await list_tasks(update, context, conn)
+        
+    except Exception as e:
+        logger.error(f"Error deleting task: {e}")
+        await query.answer(_("❌ Error deleting task."), show_alert=True)
+    
+    return TASKS_MENU

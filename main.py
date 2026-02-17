@@ -11,7 +11,8 @@ from telegram.ext import (
     filters,
     PicklePersistence,
 )
-from database.database import create_connection, create_table
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from database.database import create_connection, create_table, get_all_tasks
 from bot.conversation_handlers import (
     start,
     start_over,
@@ -24,6 +25,15 @@ from bot.conversation_handlers import (
     delete_conversation_handler,
     done,
     reply_to_image_conversation,
+    open_tasks_menu,
+    start_add_task,
+    handle_task_prompt,
+    handle_task_time,
+    handle_task_interval,
+    list_tasks,
+    delete_task_handler,
+    set_scheduler,
+    schedule_task_job,
 )
 
 # Setup translation
@@ -45,7 +55,9 @@ logger = logging.getLogger(__name__)
 logging.info(f"Selected language: {lang}")
 logging.info(f"Selected log level: {log_level}")
 
-CHOOSING, IMAGE_CHOICE, CONVERSATION, CONVERSATION_HISTORY, IMAGE_CONVERSATION = range(5)
+CHOOSING, IMAGE_CHOICE, CONVERSATION, CONVERSATION_HISTORY, IMAGE_CONVERSATION, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL = range(
+    9
+)
 
 
 def entry_points():
@@ -76,6 +88,10 @@ def states():
             CallbackQueryHandler(
                 lambda update, context: done(update, context),
                 pattern="^End_Conversation$",
+            ),
+            CallbackQueryHandler(
+                lambda update, context: open_tasks_menu(update, context),
+                pattern="^Tasks_Menu$",
             ),
         ],
         IMAGE_CHOICE: [
@@ -112,6 +128,42 @@ def states():
                 reply_to_image_conversation,
             )
         ],
+        TASKS_MENU: [
+            CallbackQueryHandler(
+                lambda update, context: start_add_task(update, context),
+                pattern="^Tasks_Add$",
+            ),
+            CallbackQueryHandler(
+                lambda update, context: list_tasks(update, context, conn),
+                pattern="^Tasks_List$",
+            ),
+            CallbackQueryHandler(
+                lambda update, context: delete_task_handler(update, context, conn),
+                pattern="^TASK_DELETE#",
+            ),
+            CallbackQueryHandler(
+                lambda update, context: open_tasks_menu(update, context),
+                pattern="^Tasks_Menu$",
+            ),
+        ],
+        TASKS_ADD_PROMPT: [
+            MessageHandler(
+                filters.TEXT & ~filters.Regex("^/"),
+                handle_task_prompt,
+            )
+        ],
+        TASKS_ADD_TIME: [
+            MessageHandler(
+                filters.TEXT & ~filters.Regex("^/"),
+                handle_task_time,
+            )
+        ],
+        TASKS_ADD_INTERVAL: [
+            CallbackQueryHandler(
+                lambda update, context: handle_task_interval(update, context, conn),
+                pattern="^Tasks_Interval_",
+            )
+        ],
     }
 
 
@@ -141,10 +193,34 @@ def create_conv_handler():
 
 def main() -> None:
     persistence = PicklePersistence(filepath="conversation_persistence")
-    application = Application.builder().token(os.getenv("TELEGRAM_BOT_TOKEN")).persistence(persistence).build()
+    application = (
+        Application.builder()
+        .token(os.getenv("TELEGRAM_BOT_TOKEN"))
+        .persistence(persistence)
+        .build()
+    )
 
     conv_handler = create_conv_handler()
     application.add_handler(conv_handler)
+
+    # Setup APScheduler for recurring tasks and load existing tasks
+    scheduler = AsyncIOScheduler()
+    set_scheduler(scheduler, application)
+
+    try:
+        tasks = get_all_tasks(conn)
+        for task in tasks:
+            schedule_task_job(
+                task_id=task["id"],
+                user_id=task["user_id"],
+                prompt=task["prompt"],
+                run_time=task["run_time"],
+                interval=task["interval"],
+            )
+    except Exception as e:
+        logger.error(f"Failed to load existing tasks for scheduling: {e}")
+
+    scheduler.start()
 
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
