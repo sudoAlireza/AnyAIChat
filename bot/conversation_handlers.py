@@ -622,7 +622,7 @@ async def send_scheduled_task(user_id: int, prompt: str):
         keyboard = [[InlineKeyboardButton(_("Tasks Menu"), callback_data="Tasks_Menu")]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        message = f"🔔 *Scheduled Task Result*\n\n*Prompt:* {prompt}\n\n*Response:*\n{response}"
+        message = f"🔔 *Scheduled Task Result*\n\n*Response:*\n{response}"
         
         try:
             await _bot_application.bot.send_message(
