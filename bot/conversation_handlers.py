@@ -598,8 +598,15 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 # Task scheduling globals
 _scheduler = None
 _bot_application = None
+_db_connection = None
 
 TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL = range(5, 9)
+
+
+def set_db_connection(conn):
+    """Set the global database connection instance"""
+    global _db_connection
+    _db_connection = conn
 
 
 def set_scheduler(scheduler, application):

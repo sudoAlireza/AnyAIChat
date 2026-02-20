@@ -131,6 +131,10 @@ ENV/
 env.bak/
 venv.bak/
 
+# Pickle files
+pickles/
+conversation_persistence
+
 # Spyder project settings
 .spyderproject
 .spyproject

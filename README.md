@@ -42,6 +42,18 @@ https://github.com/sudoAlireza/GeminiBot/assets/87416117/beeb0fd2-73c6-4631-baea
    pip install -r requirements.txt
    ```
 
+4. **Set up environment variables**:
+
+   ```bash
+   # Copy the example environment file
+   cp .env.example .env
+   
+   # Edit .env with your actual credentials
+   nano .env  # or use your preferred editor
+   ```
+   
+   **IMPORTANT**: Never commit your `.env` file to version control. It contains sensitive API keys.
+
 ### Environment Variables
 
 The bot is configured using environment variables. The following variables are required:
@@ -189,7 +201,14 @@ To begin with Gemini, refer to the [Gemini API: Quickstart with Python](https://
 
 ## Security
 
-Ensure the security of your API keys and sensitive information. Follow best practices for securing API keys and tokens.
+**CRITICAL**: Ensure the security of your API keys and sensitive information.
+
+- Never commit `.env` file to version control
+- Use `.env.example` as a template
+- Regenerate keys immediately if exposed
+- Follow best practices in [SECURITY.md](SECURITY.md)
+
+For detailed security guidelines, see [SECURITY.md](SECURITY.md).
 
 ## Contributing
 

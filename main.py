@@ -1,6 +1,7 @@
 import os
 import logging
 import gettext
+from typing import Dict, List
 from telegram import Update
 from telegram.ext import (
     Application,
@@ -34,6 +35,7 @@ from bot.conversation_handlers import (
     delete_task_handler,
     set_scheduler,
     schedule_task_job,
+    set_db_connection,
 )
 
 # Setup translation
@@ -59,38 +61,48 @@ CHOOSING, IMAGE_CHOICE, CONVERSATION, CONVERSATION_HISTORY, IMAGE_CONVERSATION, 
     9
 )
 
+# Global database connection (set at startup)
+_db_conn = None
 
-def entry_points():
+
+def get_db_connection():
+    """Get the global database connection"""
+    return _db_conn
+
+
+def entry_points() -> List:
+    """Define conversation entry points"""
     return [
-        CommandHandler("start", lambda update, context: start(update, context)),
+        CommandHandler("start", start),
         CallbackQueryHandler(
-            lambda update, context: start_over(update, context, conn),
+            lambda update, context: start_over(update, context, get_db_connection()),
             pattern="^Start_Again",
         ),
     ]
 
 
-def states():
+def states() -> Dict:
+    """Define conversation states and their handlers"""
     return {
         CHOOSING: [
             CallbackQueryHandler(
-                lambda update, context: start_conversation(update, context),
+                start_conversation,
                 pattern="^New_Conversation$",
             ),
             CallbackQueryHandler(
-                lambda update, context: start_image_conversation(update, context),
+                start_image_conversation,
                 pattern="^Image_Description$",
             ),
             CallbackQueryHandler(
-                lambda update, context: get_conversation_history(update, context, conn),
+                lambda update, context: get_conversation_history(update, context, get_db_connection()),
                 pattern="^PAGE#",
             ),
             CallbackQueryHandler(
-                lambda update, context: done(update, context),
+                done,
                 pattern="^End_Conversation$",
             ),
             CallbackQueryHandler(
-                lambda update, context: open_tasks_menu(update, context),
+                open_tasks_menu,
                 pattern="^Tasks_Menu$",
             ),
         ],
@@ -108,17 +120,15 @@ def states():
         ],
         CONVERSATION_HISTORY: [
             CallbackQueryHandler(
-                lambda update, context: get_conversation_history(update, context, conn),
+                lambda update, context: get_conversation_history(update, context, get_db_connection()),
                 pattern="^PAGE#",
             ),
             MessageHandler(
                 filters.Regex("^/conv"),
-                lambda update, context: get_conversation_handler(update, context, conn),
+                lambda update, context: get_conversation_handler(update, context, get_db_connection()),
             ),
             CallbackQueryHandler(
-                lambda update, context: delete_conversation_handler(
-                    update, context, conn
-                ),
+                lambda update, context: delete_conversation_handler(update, context, get_db_connection()),
                 pattern="^Delete_Conversation$",
             ),
         ],
@@ -130,19 +140,19 @@ def states():
         ],
         TASKS_MENU: [
             CallbackQueryHandler(
-                lambda update, context: start_add_task(update, context),
+                start_add_task,
                 pattern="^Tasks_Add$",
             ),
             CallbackQueryHandler(
-                lambda update, context: list_tasks(update, context, conn),
+                lambda update, context: list_tasks(update, context, get_db_connection()),
                 pattern="^Tasks_List$",
             ),
             CallbackQueryHandler(
-                lambda update, context: delete_task_handler(update, context, conn),
+                lambda update, context: delete_task_handler(update, context, get_db_connection()),
                 pattern="^TASK_DELETE#",
             ),
             CallbackQueryHandler(
-                lambda update, context: open_tasks_menu(update, context),
+                open_tasks_menu,
                 pattern="^Tasks_Menu$",
             ),
         ],
@@ -160,26 +170,26 @@ def states():
         ],
         TASKS_ADD_INTERVAL: [
             CallbackQueryHandler(
-                lambda update, context: handle_task_interval(update, context, conn),
+                lambda update, context: handle_task_interval(update, context, get_db_connection()),
                 pattern="^Tasks_Interval_",
             )
         ],
     }
 
 
-def fallbacks():
+def fallbacks() -> List:
+    """Define conversation fallback handlers"""
     return [
+        CallbackQueryHandler(done, pattern="^Done$"),
         CallbackQueryHandler(
-            lambda update, context: done(update, context), pattern="^Done$"
-        ),
-        CallbackQueryHandler(
-            lambda update, context: start_over(update, context, conn),
+            lambda update, context: start_over(update, context, get_db_connection()),
             pattern="^Start_Again",
         ),
     ]
 
 
-def create_conv_handler():
+def create_conv_handler() -> ConversationHandler:
+    """Create and configure the conversation handler"""
     return ConversationHandler(
         entry_points=entry_points(),
         states=states(),
@@ -192,7 +202,34 @@ def create_conv_handler():
 
 
 def main() -> None:
-    persistence = PicklePersistence(filepath="conversation_persistence")
+    """Main function to initialize and run the bot"""
+    global _db_conn
+    
+    # Validate environment variables
+    required_env_vars = ["TELEGRAM_BOT_TOKEN", "GEMINI_API_TOKEN", "AUTHORIZED_USER"]
+    missing_vars = [var for var in required_env_vars if not os.getenv(var)]
+    
+    if missing_vars:
+        logger.error(f"Missing required environment variables: {', '.join(missing_vars)}")
+        logger.error("Please check your .env file. See .env.example for reference.")
+        return
+    
+    # Initialize database
+    database = "data/conversations_data.db"
+    _db_conn = create_connection(database)
+    
+    if not _db_conn:
+        logger.error("Failed to create database connection. Exiting.")
+        return
+    
+    create_table(_db_conn)
+    logger.info("Database initialized successfully")
+    
+    # Set database connection for handlers
+    set_db_connection(_db_conn)
+    
+    # Initialize bot application
+    persistence = PicklePersistence(filepath="data/conversation_persistence")
     application = (
         Application.builder()
         .token(os.getenv("TELEGRAM_BOT_TOKEN"))
@@ -208,7 +245,9 @@ def main() -> None:
     set_scheduler(scheduler, application)
 
     try:
-        tasks = get_all_tasks(conn)
+        tasks = get_all_tasks(_db_conn)
+        logger.info(f"Loading {len(tasks)} existing tasks from database")
+        
         for task in tasks:
             schedule_task_job(
                 task_id=task["id"],
@@ -217,18 +256,22 @@ def main() -> None:
                 run_time=task["run_time"],
                 interval=task["interval"],
             )
+        
+        logger.info(f"Successfully scheduled {len(tasks)} tasks")
     except Exception as e:
         logger.error(f"Failed to load existing tasks for scheduling: {e}")
 
     scheduler.start()
-
+    logger.info("Scheduler started successfully")
+    
+    logger.info("Bot is starting... Press Ctrl+C to stop")
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
 
 if __name__ == "__main__":
-    database = "data/conversations_data.db"
-
-    conn = create_connection(database)
-    create_table(conn)
-
-    main()
+    try:
+        main()
+    except KeyboardInterrupt:
+        logger.info("Bot stopped by user")
+    except Exception as e:
+        logger.error(f"Fatal error: {e}", exc_info=True)
