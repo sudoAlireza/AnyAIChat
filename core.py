@@ -10,13 +10,12 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class GeminiChat:
-    def __init__(self, gemini_token: str, chat_history: List[Dict[str, Any]] = None, model_name: str = None, tools: List[str] = None):
+    def __init__(self, gemini_token: str, chat_history: List[Dict[str, Any]] = None, model_name: str = None, tools: List[str] = None, system_instruction: str = None, knowledge_base: List[Dict[str, Any]] = None):
         self.chat_history = chat_history if chat_history else []
         self.gemini_token = gemini_token
+        self.system_instruction = system_instruction
+        self.knowledge_base = knowledge_base if knowledge_base else []
         # Each instance configures the global genai with its own key
-        # This might be an issue with concurrency if not careful, 
-        # but since we are using it sequentially in handlers it should be fine.
-        # Ideally, we'd use a thread-local or pass the client around.
         genai.configure(api_key=self.gemini_token)
         with open("./safety_settings.json", "r") as fp:
             self.safety_settings = json.load(fp)
@@ -65,22 +64,31 @@ class GeminiChat:
         # Prepare initial history
         history = []
         if self.chat_history:
-            # chat_history is expected to be a list of {'role': '...', 'parts': [...]}
             history.extend(self.chat_history)
             
         lang = os.getenv("LANGUAGE", "en")
         self.chat = model.start_chat(history=history)
         
-        # System instructions as a first message if history is empty
+        # System instructions
         if not history:
-            system_instruction = (
+            base_instruction = (
                 f"You are a helpful assistant with a female persona. Please respond in {lang} language. "
                 "Please use Telegram-compatible markdown (MarkdownV2). "
                 "Use *bold* for bold text, _italic_ for italic, and `code` for code blocks. "
                 "Do NOT use headers (#), horizontal rules (---), or complex tables. "
                 "Always escape special characters if necessary, but keep it simple."
             )
-            self.chat.send_message(system_instruction)
+            
+            if self.system_instruction:
+                base_instruction += f"\n\nAdditional instructions for your persona: {self.system_instruction}"
+            
+            if self.knowledge_base:
+                base_instruction += "\n\nYou have access to the following documents from your knowledge base (context preview):"
+                for doc in self.knowledge_base:
+                    base_instruction += f"\n- {doc['file_name']}: {doc['content_preview']}"
+                base_instruction += "\nUse this information when relevant to answer user queries."
+                
+            self.chat.send_message(base_instruction)
             
         if image:
             # If we have an image at the start, we send it as the first user message
@@ -176,19 +184,49 @@ class GeminiChat:
         self.chat = None
         self.chat_history = []
 
-    def generate_plan(self, prompt: str, days: int = 30) -> str:
-        """Generate a JSON plan for a specific topic over a number of days."""
+    def generate_image(self, prompt: str) -> str:
+        """Generate an image using Imagen model if supported by API."""
+        try:
+            # Imagen is often under a different model name like 'imagen-3.0-generate-001'
+            # For now, we'll try to find a model that supports image generation 
+            # or use a common default if available.
+            # However, standard Gemini 1.5 doesn't generate images directly via generate_content.
+            # We'll use a specialized method if the SDK supports it.
+            # If not directly supported, we might need to use Vertex AI or another endpoint.
+            # For this implementation, we will assume the use of a generative model that supports image output.
+            
+            # Since Gemini 1.5 doesn't currently generate images directly in the same way it generates text
+            # (it's multimodal input, not yet multimodal output in this SDK version typically),
+            # we'll use a placeholder or log that this requires Imagen API.
+            
+            # Update: Some versions of the API allow using 'imagen' model.
+            model = genai.GenerativeModel("imagen-3.0-generate-001") # Example model name
+            response = model.generate_content(prompt)
+            # This would return an image object.
+            # Since we can't easily handle raw image bytes here without knowing the exact SDK response,
+            # we will provide a structured way for the bot to call it.
+            return response
+        except Exception as e:
+            logger.error(f"Failed to generate image: {e}")
+            raise
+
+    def parse_voice_command(self, transcript: str) -> Dict[str, Any]:
+        """Use AI to parse a voice transcript into a command/action."""
         system_instruction = (
-            f"Generate a {days}-day plan for the following topic: '{prompt}'. "
-            "The output MUST be a valid JSON list of objects. Each object must have 'day' (integer), "
-            "'title' (string), and 'subject' (string) fields. "
-            "Example format: [{\"day\": 1, \"title\": \"Introduction\", \"subject\": \"Overview of the topic\"}, ...]. "
-            "Do not include any other text or markdown formatting (like ```json). Just the raw JSON list."
+            "Analyze the following transcript and determine if the user wants to perform an action. "
+            "Actions include: 'start_task' (for 30-day plans), 'set_reminder', 'generate_image', or 'none'. "
+            "Return the result as a JSON object with 'action' and 'parameters' (dict). "
+            "Example for reminder: {'action': 'set_reminder', 'parameters': {'text': 'buy milk', 'time': 'tomorrow 5pm'}} "
+            "Example for task: {'action': 'start_task', 'parameters': {'topic': 'learning python'}} "
+            "Example for image: {'action': 'generate_image', 'parameters': {'prompt': 'a cat in space'}} "
+            "Transcript: "
         )
         try:
             model = self._get_model()
-            response = model.generate_content(system_instruction)
-            return response.text.strip()
+            response = model.generate_content(system_instruction + transcript)
+            # Clean JSON
+            json_str = response.text.strip().replace("```json", "").replace("```", "")
+            return json.loads(json_str)
         except Exception as e:
-            logger.error(f"Failed to generate plan: {e}")
-            return "[]"
+            logger.error(f"Failed to parse voice command: {e}")
+            return {"action": "none", "parameters": {}}

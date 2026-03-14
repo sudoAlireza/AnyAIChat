@@ -32,6 +32,31 @@ def create_table(conn):
                 api_key TEXT,
                 model_name TEXT,
                 grounding INTEGER DEFAULT 0,
+                system_instruction TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS knowledge_base (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                file_name TEXT NOT NULL,
+                file_id TEXT NOT NULL,
+                content_preview TEXT,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS reminders (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                user_id INTEGER NOT NULL,
+                reminder_text TEXT NOT NULL,
+                remind_at TIMESTAMP NOT NULL,
+                status TEXT DEFAULT 'pending',
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
@@ -251,14 +276,15 @@ def get_user(conn, user_id):
     :return: user dict or None
     """
     cur = conn.cursor()
-    cur.execute("SELECT user_id, api_key, model_name, grounding FROM users WHERE user_id=?", (user_id,))
+    cur.execute("SELECT user_id, api_key, model_name, grounding, system_instruction FROM users WHERE user_id=?", (user_id,))
     item = cur.fetchone()
     if item:
         return {
             "user_id": item[0],
             "api_key": item[1],
             "model_name": item[2],
-            "grounding": item[3]
+            "grounding": item[3],
+            "system_instruction": item[4]
         }
     return None
 
@@ -276,22 +302,118 @@ def update_user_api_key(conn, user_id, api_key):
     conn.commit()
 
 
-def update_user_settings(conn, user_id, model_name=None, grounding=None):
+def update_user_settings(conn, user_id, model_name=None, grounding=None, system_instruction=None):
     """
     Update user settings
     """
-    if model_name is not None and grounding is not None:
-        sql = "UPDATE users SET model_name=?, grounding=? WHERE user_id=?"
-        params = (model_name, grounding, user_id)
-    elif model_name is not None:
-        sql = "UPDATE users SET model_name=? WHERE user_id=?"
-        params = (model_name, user_id)
-    elif grounding is not None:
-        sql = "UPDATE users SET grounding=? WHERE user_id=?"
-        params = (grounding, user_id)
-    else:
+    updates = []
+    params = []
+    
+    if model_name is not None:
+        updates.append("model_name=?")
+        params.append(model_name)
+    if grounding is not None:
+        updates.append("grounding=?")
+        params.append(grounding)
+    if system_instruction is not None:
+        updates.append("system_instruction=?")
+        params.append(system_instruction)
+        
+    if not updates:
         return
 
+    params.append(user_id)
+    sql = f"UPDATE users SET {', '.join(updates)} WHERE user_id=?"
+    
     cur = conn.cursor()
-    cur.execute(sql, params)
+    cur.execute(sql, tuple(params))
     conn.commit()
+
+
+# --- Knowledge Base Functions ---
+
+def add_knowledge(conn, knowledge):
+    """
+    Add a new document to user knowledge base
+    :param conn:
+    :param knowledge: (user_id, file_name, file_id, content_preview)
+    """
+    sql = "INSERT INTO knowledge_base(user_id, file_name, file_id, content_preview) VALUES(?,?,?,?)"
+    cur = conn.cursor()
+    cur.execute(sql, knowledge)
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_user_knowledge(conn, user_id):
+    """
+    Retrieve all knowledge documents for a user
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT id, file_name, file_id, content_preview FROM knowledge_base WHERE user_id=?", (user_id,))
+    results = cur.fetchall()
+    return [{"id": r[0], "file_name": r[1], "file_id": r[2], "content_preview": r[3]} for r in results]
+
+
+def delete_knowledge(conn, user_id, doc_id):
+    """
+    Delete a knowledge document
+    """
+    cur = conn.cursor()
+    cur.execute("DELETE FROM knowledge_base WHERE user_id=? AND id=?", (user_id, doc_id))
+    conn.commit()
+    return cur.rowcount > 0
+
+
+# --- Reminder Functions ---
+
+def add_reminder(conn, reminder):
+    """
+    Add a new reminder
+    :param conn:
+    :param reminder: (user_id, reminder_text, remind_at)
+    """
+    sql = "INSERT INTO reminders(user_id, reminder_text, remind_at) VALUES(?,?,?)"
+    cur = conn.cursor()
+    cur.execute(sql, reminder)
+    conn.commit()
+    return cur.lastrowid
+
+
+def get_pending_reminders(conn):
+    """
+    Retrieve all pending reminders
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT id, user_id, reminder_text, remind_at FROM reminders WHERE status='pending'")
+    results = cur.fetchall()
+    return [{"id": r[0], "user_id": r[1], "reminder_text": r[2], "remind_at": r[3]} for r in results]
+
+
+def update_reminder_status(conn, reminder_id, status):
+    """
+    Update reminder status
+    """
+    cur = conn.cursor()
+    cur.execute("UPDATE reminders SET status=? WHERE id=?", (status, reminder_id))
+    conn.commit()
+
+
+def get_user_reminders(conn, user_id):
+    """
+    Retrieve reminders for a user
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT id, reminder_text, remind_at, status FROM reminders WHERE user_id=? ORDER BY remind_at DESC", (user_id,))
+    results = cur.fetchall()
+    return [{"id": r[0], "reminder_text": r[1], "remind_at": r[2], "status": r[3]} for r in results]
+
+
+def delete_reminder(conn, user_id, reminder_id):
+    """
+    Delete a reminder
+    """
+    cur = conn.cursor()
+    cur.execute("DELETE FROM reminders WHERE user_id=? AND id=?", (user_id, reminder_id))
+    conn.commit()
+    return cur.rowcount > 0

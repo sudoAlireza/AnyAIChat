@@ -37,7 +37,20 @@ from bot.conversation_handlers import (
     open_storage_menu,
     toggle_web_search,
     handle_api_key,
+    open_api_key_handler,
     update_api_key_handler,
+    open_persona_menu,
+    handle_persona_input,
+    open_reminders_menu,
+    start_add_reminder,
+    handle_reminder_input,
+    delete_reminder_handler,
+    open_knowledge_menu,
+    start_add_knowledge,
+    handle_knowledge_input,
+    delete_knowledge_handler,
+    generate_image_handler,
+    check_reminders_task,
 )
 from dotenv import load_dotenv
 
@@ -64,7 +77,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT = range(12)
+CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT = range(18)
 
 # Global connection
 database_path = "data/gemini_bot.db"
@@ -93,10 +106,13 @@ def states():
                 pattern="^PAGE#",
             ),
             CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
+            CallbackQueryHandler(open_reminders_menu, pattern="^Reminders_Menu$"),
+            CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
             CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
             CallbackQueryHandler(done, pattern="^End_Conversation$"),
         ],
         CONVERSATION: [
+            CommandHandler("image", generate_image_handler),
             MessageHandler((filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, reply_and_new_message),
             CallbackQueryHandler(lambda update, context: start_over(update, context, conn), pattern="^Start_Again"),
         ],
@@ -136,10 +152,35 @@ def states():
         ],
         SETTINGS_MENU: [
             CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),
+            CallbackQueryHandler(open_persona_menu, pattern="^Persona_Menu$"),
             CallbackQueryHandler(open_storage_menu, pattern="^Storage_Menu$"),
             CallbackQueryHandler(toggle_web_search, pattern="^TOGGLE_WEB_SEARCH$"),
             CallbackQueryHandler(update_api_key_handler, pattern="^UPDATE_API_KEY$"),
             CallbackQueryHandler(lambda update, context: start_over(update, context, conn), pattern="^Start_Again"),
+        ],
+        PERSONA_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_persona_input),
+            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
+        ],
+        REMINDERS_MENU: [
+            CallbackQueryHandler(start_add_reminder, pattern="^Add_Reminder$"),
+            CallbackQueryHandler(delete_reminder_handler, pattern="^REMINDER_DELETE#"),
+            CallbackQueryHandler(lambda update, context: start_over(update, context, conn), pattern="^Start_Again"),
+            CallbackQueryHandler(open_reminders_menu, pattern="^Reminders_Menu$"),
+        ],
+        REMINDERS_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_reminder_input),
+            CallbackQueryHandler(open_reminders_menu, pattern="^Reminders_Menu$"),
+        ],
+        KNOWLEDGE_MENU: [
+            CallbackQueryHandler(start_add_knowledge, pattern="^Add_Knowledge$"),
+            CallbackQueryHandler(delete_knowledge_handler, pattern="^KNOWLEDGE_DELETE#"),
+            CallbackQueryHandler(lambda update, context: start_over(update, context, conn), pattern="^Start_Again"),
+            CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
+        ],
+        KNOWLEDGE_INPUT: [
+            MessageHandler(filters.Document.ALL & ~filters.COMMAND, handle_knowledge_input),
+            CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
         ],
         MODELS_MENU: [
             CallbackQueryHandler(set_model_handler, pattern="^SET_MODEL_"),
@@ -195,6 +236,7 @@ def main() -> None:
     except Exception as e:
         logger.error(f"Failed to load tasks: {e}")
 
+    scheduler.add_job(check_reminders_task, 'interval', minutes=1)
     scheduler.start()
     application.run_polling(allowed_updates=Update.ALL_TYPES)
 
