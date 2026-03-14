@@ -477,13 +477,13 @@ async def handle_task_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     if query:
         await query.answer()
-        # If called via back button, we might want to let them re-enter prompt or just show current
-        await query.edit_message_text(_("Enter task prompt:"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")]]))
+        # Return to prompt input screen
+        await query.edit_message_text(_("Enter task prompt:"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")]]))
         return TASKS_ADD_PROMPT
     
     context.user_data["task_prompt"] = update.message.text
     
-    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Add")]]
+    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")]]
     await update.message.reply_text(_("Enter time (HH:MM):"), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_ADD_TIME
 
@@ -503,7 +503,7 @@ async def handle_task_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         await update.message.reply_text(_("Choose interval:"), reply_markup=InlineKeyboardMarkup(keyboard))
         return TASKS_ADD_INTERVAL
     except ValueError:
-        await update.message.reply_text(_("Invalid format. Use HH:MM:"))
+        await update.message.reply_text(_("Invalid format. Use HH:MM:"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")]]))
         return TASKS_ADD_TIME
 
 @restricted
@@ -543,6 +543,7 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         keyboard = [
             [InlineKeyboardButton(_("✅ Approve"), callback_data="Plan_Approve")],
             [InlineKeyboardButton(_("❌ Reject"), callback_data="Plan_Reject")],
+            [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Time")],
         ]
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
         return TASKS_CONFIRM_PLAN
@@ -550,6 +551,20 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         logger.error(f"Failed to parse plan: {e}. Plan: {plan_json_str}")
         await query.edit_message_text(_("Failed to generate a valid plan. Try again."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Add")]]))
         return TASKS_MENU
+
+@restricted
+async def back_to_time_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    keyboard = [
+        [InlineKeyboardButton(_("Once"), callback_data="Tasks_Interval_once")],
+        [InlineKeyboardButton(_("Daily"), callback_data="Tasks_Interval_daily")],
+        [InlineKeyboardButton(_("Weekly"), callback_data="Tasks_Interval_weekly")],
+        [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")],
+    ]
+    await query.edit_message_text(_("Choose interval:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    return TASKS_ADD_INTERVAL
 
 @restricted
 async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:

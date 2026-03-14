@@ -29,6 +29,7 @@ from bot.conversation_handlers import (
     handle_task_plan_approval,
     list_tasks,
     delete_task_handler,
+    back_to_time_handler,
     set_scheduler,
     schedule_task_job,
     open_settings_menu,
@@ -149,6 +150,7 @@ def states():
         ],
         TASKS_CONFIRM_PLAN: [
             CallbackQueryHandler(lambda update, context: handle_task_plan_approval(update, context, conn), pattern="^Plan_"),
+            CallbackQueryHandler(back_to_time_handler, pattern="^Back_To_Time$"),
         ],
         SETTINGS_MENU: [
             CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),
