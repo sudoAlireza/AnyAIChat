@@ -38,7 +38,6 @@ from bot.conversation_handlers import (
     open_storage_menu,
     toggle_web_search,
     handle_api_key,
-    open_api_key_handler,
     update_api_key_handler,
     open_persona_menu,
     handle_persona_input,
