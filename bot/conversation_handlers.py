@@ -5,6 +5,7 @@ import uuid
 import math
 import json
 import asyncio
+import google.generativeai as genai
 from functools import wraps
 from datetime import datetime
 
@@ -30,10 +31,24 @@ from database.database import (
     get_user,
     update_user_api_key,
     update_user_settings,
+    add_knowledge,
+    get_user_knowledge,
+    delete_knowledge,
+    add_reminder,
+    get_user_reminders,
+    delete_reminder,
+    get_pending_reminders,
+    update_reminder_status,
 )
 from helpers.inline_paginator import InlineKeyboardPaginator
 from helpers.helpers import conversations_page_content, strip_markdown, split_message, escape_markdown_v2
 
+# Translation function placeholder (will be set by main.py)
+def _(text):
+    import builtins
+    if '_' in builtins.__dict__:
+        return builtins.__dict__['_'](text)
+    return text
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
@@ -78,7 +93,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     logger.info("Received command: /start")
     
     user_id = update.effective_user.id
-    from main import conn
+    from database.database import get_user, create_connection
+    conn = create_connection("data/gemini_bot.db")
     user = get_user(conn, user_id)
     
     if not user or not user.get('api_key'):
@@ -127,7 +143,8 @@ async def handle_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     api_key = update.message.text.strip()
     user_id = update.effective_user.id
     
-    from main import conn
+    from database.database import create_connection
+    conn = create_connection("data/gemini_bot.db")
     update_user_api_key(conn, user_id, api_key)
     
     await update.message.reply_text(_("API Key saved successfully! Now you can start using the bot."))
@@ -135,7 +152,7 @@ async def handle_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
 
 @restricted
-async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
+async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn=None) -> int:
     """Close current chat and return to main menu."""
     query = update.callback_query
     if query:
@@ -143,6 +160,10 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
 
     user_id = update.effective_user.id
     
+    if conn is None:
+        from database.database import create_connection
+        conn = create_connection("data/gemini_bot.db")
+
     # Save conversation if requested
     gemini_chat = context.user_data.get("gemini_chat")
     if gemini_chat and query and "_SAVE" in query.data:
@@ -171,7 +192,9 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
     context.user_data["conversation_id"] = None
     
     # Refresh user data from DB for next conversation
-    from main import conn
+    from database.database import get_user, create_connection
+    if conn is None:
+        conn = create_connection("data/gemini_bot.db")
     user = get_user(conn, user_id)
     if user:
         context.user_data["api_key"] = user['api_key']
@@ -185,7 +208,8 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
 async def start_menu_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Send main menu as a new message."""
     user_id = update.effective_user.id
-    from main import conn
+    from database.database import get_user, create_connection
+    conn = create_connection("data/gemini_bot.db")
     user = get_user(conn, user_id)
     
     keyboard = [
@@ -246,7 +270,8 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
     msg = await message.reply_text(_("Wait for response processing..."))
 
     try:
-        from main import conn
+        from database.database import get_user, create_connection
+        conn = create_connection("data/gemini_bot.db")
         gemini_chat = context.user_data.get("gemini_chat")
         user_id = update.effective_user.id
         if not gemini_chat:
@@ -700,7 +725,8 @@ async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         return SETTINGS_MENU
     
     user_id = update.effective_user.id
-    from main import conn
+    from database.database import get_user, create_connection
+    conn = create_connection("data/gemini_bot.db")
     user = get_user(conn, user_id)
     
     # Debug logging
@@ -791,7 +817,8 @@ async def set_model_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = update.effective_user.id
     logger.info(f"Setting model to {model_name} for user {user_id}")
     
-    from main import conn
+    from database.database import update_user_settings, create_connection
+    conn = create_connection("data/gemini_bot.db")
     update_user_settings(conn, user_id, model_name=model_name)
     context.user_data["model_name"] = model_name
     
@@ -839,7 +866,8 @@ async def open_persona_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     await query.answer()
     
     user_id = update.effective_user.id
-    from main import conn
+    from database.database import get_user, create_connection
+    conn = create_connection("data/gemini_bot.db")
     user = get_user(conn, user_id)
     current_persona = user.get('system_instruction') or "Default (Female Assistant)"
     
@@ -853,7 +881,8 @@ async def open_persona_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def handle_persona_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     persona_text = update.message.text
     user_id = update.effective_user.id
-    from main import conn
+    from database.database import update_user_settings, create_connection
+    conn = create_connection("data/gemini_bot.db")
     update_user_settings(conn, user_id, system_instruction=persona_text)
     context.user_data["system_instruction"] = persona_text
     
@@ -865,7 +894,8 @@ async def open_reminders_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
-    from main import conn
+    from database.database import get_user_reminders, create_connection
+    conn = create_connection("data/gemini_bot.db")
     reminders = get_user_reminders(conn, update.effective_user.id)
     
     text = "⏰ Your Reminders:\n\n"
@@ -899,7 +929,8 @@ async def handle_reminder_input(update: Update, context: ContextTypes.DEFAULT_TY
         datetime.strptime(time_part, "%Y-%m-%d %H:%M")
         
         user_id = update.effective_user.id
-        from main import conn
+        from database.database import add_reminder, create_connection
+        conn = create_connection("data/gemini_bot.db")
         add_reminder(conn, (user_id, msg_part, time_part))
         
         await update.message.reply_text(_("Reminder saved!"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to Reminders"), callback_data="Reminders_Menu")]]))
@@ -914,7 +945,8 @@ async def delete_reminder_handler(update: Update, context: ContextTypes.DEFAULT_
     await query.answer()
     reminder_id = int(query.data.split("#")[1])
     
-    from main import conn
+    from database.database import delete_reminder, create_connection
+    conn = create_connection("data/gemini_bot.db")
     delete_reminder(conn, update.effective_user.id, reminder_id)
     await open_reminders_menu(update, context)
     return REMINDERS_MENU
@@ -924,7 +956,8 @@ async def open_knowledge_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer()
     
-    from main import conn
+    from database.database import get_user_knowledge, create_connection
+    conn = create_connection("data/gemini_bot.db")
     knowledge = get_user_knowledge(conn, update.effective_user.id)
     
     text = "📚 Your Knowledge Base (RAG):\n\n"
@@ -971,8 +1004,8 @@ async def handle_knowledge_input(update: Update, context: ContextTypes.DEFAULT_T
         response = model.generate_content(["Summarize this document in 2-3 sentences to be used as context for future queries.", uploaded_file])
         preview = response.text.strip()
         
-        from main import conn
-        from database.database import add_knowledge
+        from database.database import add_knowledge, create_connection
+        conn = create_connection("data/gemini_bot.db")
         add_knowledge(conn, (update.effective_user.id, doc.file_name, doc.file_id, preview))
         
         await update.message.reply_text(_("Document added to Knowledge Base!"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to Knowledge Menu"), callback_data="Knowledge_Menu")]]))
@@ -991,8 +1024,8 @@ async def delete_knowledge_handler(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
     doc_id = int(query.data.split("#")[1])
     
-    from main import conn
-    from database.database import delete_knowledge
+    from database.database import delete_knowledge, create_connection
+    conn = create_connection("data/gemini_bot.db")
     delete_knowledge(conn, update.effective_user.id, doc_id)
     await open_knowledge_menu(update, context)
     return KNOWLEDGE_MENU
@@ -1037,8 +1070,8 @@ async def check_reminders_task():
     if not _application:
         return
         
-    from main import conn
-    from database.database import get_pending_reminders, update_reminder_status
+    from database.database import get_pending_reminders, update_reminder_status, create_connection
+    conn = create_connection("data/gemini_bot.db")
     
     reminders = get_pending_reminders(conn)
     now = datetime.now()
@@ -1066,7 +1099,8 @@ async def toggle_web_search(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     user_id = update.effective_user.id
     logger.info(f"Toggling web search to {new_status} for user {user_id}")
     
-    from main import conn
+    from database.database import update_user_settings, create_connection
+    conn = create_connection("data/gemini_bot.db")
     update_user_settings(conn, user_id, grounding=int(new_status))
     context.user_data["web_search"] = new_status
     

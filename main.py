@@ -213,7 +213,7 @@ def main() -> None:
         states=states(),
         fallbacks=fallbacks(),
         name="gemini_conversation",
-        persistent=False, # Changed to False since we use SQLite now
+        persistent=False,
         allow_reentry=True,
     )
     application.add_handler(conv_handler)

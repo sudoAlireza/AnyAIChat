@@ -184,6 +184,22 @@ class GeminiChat:
         self.chat = None
         self.chat_history = []
 
+    def generate_plan(self, prompt: str) -> str:
+        """Fetch a structured 30-day plan (day, title, subject) from Gemini."""
+        system_instruction = (
+            "Create a structured 30-day plan for the following topic. "
+            "Return ONLY a JSON list of objects, each with 'day' (1-30), 'title' (short string), and 'subject' (one sentence). "
+            "Do NOT include any markdown formatting like ```json. Just the raw JSON. "
+            "Topic: "
+        )
+        try:
+            model = self._get_model()
+            response = model.generate_content(system_instruction + prompt)
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Failed to generate plan: {e}")
+            return "[]"
+
     def generate_image(self, prompt: str) -> str:
         """Generate an image using Imagen model if supported by API."""
         try:
