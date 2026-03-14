@@ -45,6 +45,8 @@ def create_table(conn):
                 prompt TEXT NOT NULL,
                 run_time TEXT NOT NULL,
                 interval TEXT NOT NULL,
+                plan_json TEXT,
+                start_date TEXT,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             );
             """
@@ -158,11 +160,11 @@ def create_task(conn, task):
     """
     Create a new task
     :param conn:
-    :param task: (user_id, prompt, run_time, interval)
+    :param task: (user_id, prompt, run_time, interval, plan_json, start_date)
     :return: task id
     """
-    sql = """ INSERT INTO tasks(user_id, prompt, run_time, interval)
-              VALUES(?,?,?,?) """
+    sql = """ INSERT INTO tasks(user_id, prompt, run_time, interval, plan_json, start_date)
+              VALUES(?,?,?,?,?,?) """
     cur = conn.cursor()
     cur.execute(sql, task)
     conn.commit()
@@ -176,7 +178,7 @@ def get_all_tasks(conn):
     :return: list of tasks
     """
     cur = conn.cursor()
-    cur.execute("SELECT id, user_id, prompt, run_time, interval FROM tasks")
+    cur.execute("SELECT id, user_id, prompt, run_time, interval, plan_json, start_date FROM tasks")
     results = cur.fetchall()
     return [
         {
@@ -185,6 +187,8 @@ def get_all_tasks(conn):
             "prompt": item[2],
             "run_time": item[3],
             "interval": item[4],
+            "plan_json": item[5],
+            "start_date": item[6],
         }
         for item in results
     ]
@@ -198,7 +202,7 @@ def get_user_tasks(conn, user_id):
     :return: list of tasks
     """
     cur = conn.cursor()
-    cur.execute("SELECT id, prompt, run_time, interval FROM tasks WHERE user_id=?", (user_id,))
+    cur.execute("SELECT id, prompt, run_time, interval, plan_json, start_date FROM tasks WHERE user_id=?", (user_id,))
     results = cur.fetchall()
     return [
         {
@@ -206,6 +210,8 @@ def get_user_tasks(conn, user_id):
             "prompt": item[1],
             "run_time": item[2],
             "interval": item[3],
+            "plan_json": item[4],
+            "start_date": item[5],
         }
         for item in results
     ]

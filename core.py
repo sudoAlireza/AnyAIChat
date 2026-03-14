@@ -165,3 +165,20 @@ class GeminiChat:
         logging.info("Closed model instance")
         self.chat = None
         self.chat_history = []
+
+    def generate_plan(self, prompt: str, days: int = 30) -> str:
+        """Generate a JSON plan for a specific topic over a number of days."""
+        system_instruction = (
+            f"Generate a {days}-day plan for the following topic: '{prompt}'. "
+            "The output MUST be a valid JSON list of objects. Each object must have 'day' (integer), "
+            "'title' (string), and 'subject' (string) fields. "
+            "Example format: [{\"day\": 1, \"title\": \"Introduction\", \"subject\": \"Overview of the topic\"}, ...]. "
+            "Do not include any other text or markdown formatting (like ```json). Just the raw JSON list."
+        )
+        try:
+            model = self._get_model()
+            response = model.generate_content(system_instruction)
+            return response.text.strip()
+        except Exception as e:
+            logger.error(f"Failed to generate plan: {e}")
+            return "[]"

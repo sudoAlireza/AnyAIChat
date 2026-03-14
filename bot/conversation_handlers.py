@@ -35,7 +35,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CHOOSING, IMAGE_CHOICE, CONVERSATION, CONVERSATION_HISTORY, IMAGE_CONVERSATION, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU = range(12)
+CHOOSING, IMAGE_CHOICE, CONVERSATION, CONVERSATION_HISTORY, IMAGE_CONVERSATION, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU = range(13)
 
 # Global reference to scheduler and application for task scheduling
 _scheduler = None
@@ -377,9 +377,67 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
     prompt = context.user_data.get("task_prompt")
     run_time = context.user_data.get("task_time")
     
-    task_id = create_task(conn, (user_id, prompt, run_time, interval))
+    # Generate Plan
+    msg = await query.edit_message_text(_("Generating plan..."))
+    gemini = GeminiChat(os.getenv("GEMINI_API_TOKEN"))
+    plan_json_str = gemini.generate_plan(prompt)
+    context.user_data["task_plan"] = plan_json_str
+    context.user_data["task_interval"] = interval
     
-    schedule_task_job(task_id, user_id, prompt, run_time, interval)
+    try:
+        plan = json.loads(plan_json_str)
+        if not isinstance(plan, list):
+             raise ValueError("Plan is not a list")
+        
+        text = _("Proposed Plan:\n\n")
+        # Show first 5 days as preview
+        for day in plan[:5]:
+            text += f"Day {day.get('day')}: {day.get('title')} - {day.get('subject')}\n"
+        if len(plan) > 5:
+            text += "...\n"
+        
+        text += _("\nDo you approve this plan?")
+        keyboard = [
+            [InlineKeyboardButton(_("✅ Approve"), callback_data="Plan_Approve")],
+            [InlineKeyboardButton(_("❌ Reject"), callback_data="Plan_Reject")],
+        ]
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        return TASKS_CONFIRM_PLAN
+    except Exception as e:
+        logger.error(f"Failed to parse plan: {e}. Plan: {plan_json_str}")
+        await query.edit_message_text(_("Failed to generate a valid plan. Try again."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Tasks_Add")]]))
+        return TASKS_MENU
+
+@restricted
+async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -> int:
+    query = update.callback_query
+    await query.answer()
+    
+    if query.data == "Plan_Reject":
+        await query.edit_message_text(_("Plan rejected. Let's start over."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Tasks_Menu")]]))
+        return TASKS_MENU
+
+    user_id = update.effective_user.id
+    prompt = context.user_data.get("task_prompt")
+    run_time = context.user_data.get("task_time")
+    interval = context.user_data.get("task_interval")
+    plan_json = context.user_data.get("task_plan")
+    
+    # We should normalize/clean the plan_json here just in case Gemini added some markdown wrappers
+    if plan_json.startswith("```"):
+        # Remove ```json and ```
+        lines = plan_json.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines[-1].startswith("```"):
+            lines = lines[:-1]
+        plan_json = "\n".join(lines).strip()
+
+    start_date = datetime.now().strftime("%Y-%m-%d")
+
+    task_id = create_task(conn, (user_id, prompt, run_time, interval, plan_json, start_date))
+    
+    schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json, start_date)
     
     await query.edit_message_text(_("Task scheduled!"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again")]]))
     return TASKS_MENU
@@ -419,19 +477,40 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text(_("Task deleted."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Tasks_Menu")]]))
     return TASKS_MENU
 
-def schedule_task_job(task_id, user_id, prompt, run_time, interval):
+def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=None, start_date=None):
     if not _scheduler:
         return
         
     hour, minute = map(int, run_time.split(":"))
     
     async def task_wrapper():
+        target_prompt = prompt
+        
+        if plan_json and start_date:
+            try:
+                plan = json.loads(plan_json)
+                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+                days_passed = (datetime.now() - start_dt).days + 1
+                
+                day_item = next((item for item in plan if item['day'] == days_passed), None)
+                if day_item:
+                    target_prompt = f"Today's topic: {day_item['title']}. Subject: {day_item['subject']}. Context: {prompt}. Please provide the content for today based on this."
+                else:
+                    # If we finished the plan, maybe we should stop or repeat? 
+                    # For now, let's just use the original prompt or notify.
+                    target_prompt = f"Plan finished or day {days_passed} not found. Original prompt: {prompt}"
+            except Exception as e:
+                logger.error(f"Error in task_wrapper plan processing: {e}")
+
         gemini = GeminiChat(os.getenv("GEMINI_API_TOKEN"))
         gemini.start_chat()
-        response = gemini.send_message(prompt)
+        response = gemini.send_message(target_prompt)
         parts = split_message(f"Scheduled Task Result:\nPrompt: {prompt}\n\n{response}")
         for part in parts:
-            await _application.bot.send_message(chat_id=user_id, text=part)
+            try:
+                await _application.bot.send_message(chat_id=user_id, text=part, parse_mode=ParseMode.MARKDOWN)
+            except:
+                await _application.bot.send_message(chat_id=user_id, text=strip_markdown(part))
 
     job_id = str(task_id)
     if interval == "once":
