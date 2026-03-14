@@ -101,6 +101,7 @@ def states():
             CallbackQueryHandler(lambda update, context: start_over(update, context, conn), pattern="^Start_Again"),
         ],
         CONVERSATION_HISTORY: [
+            CallbackQueryHandler(start_conversation, pattern="^New_Conversation$"),
             CallbackQueryHandler(
                 lambda update, context: get_conversation_history(update, context, conn),
                 pattern="^PAGE#",

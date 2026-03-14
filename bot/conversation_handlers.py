@@ -147,6 +147,18 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
         
         create_conversation(conn, (conv_id, user_id, title, json.dumps(history)))
         logger.info(f"Conversation {conv_id} saved for user {user_id}")
+        
+        # Notify user and send a NEW message for menu instead of editing the last response
+        await query.edit_message_reply_markup(reply_markup=None) # Remove buttons from saved message
+        await query.message.reply_text(_("Conversation saved successfully!"))
+        
+        # Clean up context
+        context.user_data["gemini_chat"] = None
+        context.user_data["gemini_image_chat"] = None
+        context.user_data["conversation_id"] = None
+        
+        # Send menu as a new message
+        return await start_menu_new_message(update, context)
 
     # Clean up context
     context.user_data["gemini_chat"] = None
@@ -154,6 +166,33 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
     context.user_data["conversation_id"] = None
     
     return await start(update, context)
+
+
+async def start_menu_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Send main menu as a new message."""
+    user_id = update.effective_user.id
+    from main import conn
+    user = get_user(conn, user_id)
+    
+    keyboard = [
+        [
+            InlineKeyboardButton(
+                _("Start New Conversation"), callback_data="New_Conversation"
+            ),
+        ],
+        [
+            InlineKeyboardButton(_("Chat History"), callback_data="PAGE#1"),
+            InlineKeyboardButton(_("Tasks"), callback_data="Tasks_Menu"),
+        ],
+        [
+            InlineKeyboardButton(_("⚙️ Settings"), callback_data="Settings_Menu"),
+        ],
+    ]
+    reply_markup = InlineKeyboardMarkup(keyboard)
+    welcome_text = _("Hi. It's Gemini Chat Bot. You can ask me anything and talk to me about what you want")
+    
+    await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, reply_markup=reply_markup)
+    return CHOOSING
 
 
 @restricted
