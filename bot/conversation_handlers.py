@@ -474,13 +474,16 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
              raise ValueError("Plan is not a list")
         
         text = _("Proposed Plan:\n\n")
-        # Show first 5 days as preview
-        for day in plan[:5]:
+        # Show all days
+        for day in plan:
             text += f"Day {day.get('day')}: {day.get('title')} - {day.get('subject')}\n"
-        if len(plan) > 5:
-            text += "...\n"
         
         text += _("\nDo you approve this plan?")
+        
+        # If text is too long for one message (Telegram limit is 4096), we might have an issue with edit_message_text.
+        # But for 30 days it usually fits. Let's ensure it's not over 4000.
+        if len(text) > 4000:
+            text = text[:3900] + "...\n\n(Plan truncated for display, but full plan will be saved)" + _("\nDo you approve this plan?")
         keyboard = [
             [InlineKeyboardButton(_("✅ Approve"), callback_data="Plan_Approve")],
             [InlineKeyboardButton(_("❌ Reject"), callback_data="Plan_Reject")],

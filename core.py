@@ -29,7 +29,7 @@ class GeminiChat:
             genai.configure(api_key=self.gemini_token)
             model_tools = []
             if "google_search" in self.tools:
-                model_tools.append(genai.protos.Tool(google_search_retrieval=genai.protos.GoogleSearchRetrieval()))
+                model_tools.append({"google_search": {}})
             
             return genai.GenerativeModel(
                 self.model_name, 
