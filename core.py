@@ -12,7 +12,12 @@ logger = logging.getLogger(__name__)
 class GeminiChat:
     def __init__(self, gemini_token: str, chat_history: List[Dict[str, Any]] = None, model_name: str = None, tools: List[str] = None):
         self.chat_history = chat_history if chat_history else []
-        genai.configure(api_key=gemini_token)
+        self.gemini_token = gemini_token
+        # Each instance configures the global genai with its own key
+        # This might be an issue with concurrency if not careful, 
+        # but since we are using it sequentially in handlers it should be fine.
+        # Ideally, we'd use a thread-local or pass the client around.
+        genai.configure(api_key=self.gemini_token)
         with open("./safety_settings.json", "r") as fp:
             self.safety_settings = json.load(fp)
         self.model_name = model_name if model_name else os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
@@ -21,6 +26,7 @@ class GeminiChat:
 
     def _get_model(self):
         try:
+            genai.configure(api_key=self.gemini_token)
             model_tools = []
             if "google_search" in self.tools:
                 model_tools.append(genai.protos.Tool(google_search_retrieval=genai.protos.GoogleSearchRetrieval()))
@@ -35,9 +41,11 @@ class GeminiChat:
             raise
 
     @staticmethod
-    def list_models() -> List[Dict[str, Any]]:
+    def list_models(api_key: str = None) -> List[Dict[str, Any]]:
         """List all models supported by the API that are available for generation."""
         try:
+            if api_key:
+                genai.configure(api_key=api_key)
             models = []
             for m in genai.list_models():
                 if 'generateContent' in m.supported_generation_methods:
@@ -143,9 +151,11 @@ class GeminiChat:
         return serializable_history
 
     @staticmethod
-    def list_uploaded_files() -> List[Dict[str, Any]]:
+    def list_uploaded_files(api_key: str = None) -> List[Dict[str, Any]]:
         """List all files currently uploaded to Gemini API."""
         try:
+            if api_key:
+                genai.configure(api_key=api_key)
             files = []
             for f in genai.list_files():
                 files.append({

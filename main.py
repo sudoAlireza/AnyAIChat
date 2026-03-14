@@ -36,6 +36,8 @@ from bot.conversation_handlers import (
     set_model_handler,
     open_storage_menu,
     toggle_web_search,
+    handle_api_key,
+    update_api_key_handler,
 )
 from dotenv import load_dotenv
 
@@ -62,10 +64,10 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU = range(11)
+CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT = range(12)
 
 # Global connection
-database_path = "data/conversations_data.db"
+database_path = "data/gemini_bot.db"
 os.makedirs("data", exist_ok=True)
 conn = create_connection(database_path)
 create_table(conn)
@@ -81,6 +83,9 @@ def entry_points():
 
 def states():
     return {
+        API_KEY_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_api_key),
+        ],
         CHOOSING: [
             CallbackQueryHandler(start_conversation, pattern="^New_Conversation$"),
             CallbackQueryHandler(
@@ -129,6 +134,7 @@ def states():
             CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),
             CallbackQueryHandler(open_storage_menu, pattern="^Storage_Menu$"),
             CallbackQueryHandler(toggle_web_search, pattern="^TOGGLE_WEB_SEARCH$"),
+            CallbackQueryHandler(update_api_key_handler, pattern="^UPDATE_API_KEY$"),
             CallbackQueryHandler(lambda update, context: start_over(update, context, conn), pattern="^Start_Again"),
         ],
         MODELS_MENU: [

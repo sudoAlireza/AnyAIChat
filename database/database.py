@@ -27,6 +27,17 @@ def create_table(conn):
         c = conn.cursor()
         c.execute(
             """
+            CREATE TABLE IF NOT EXISTS users (
+                user_id INTEGER PRIMARY KEY,
+                api_key TEXT,
+                model_name TEXT,
+                grounding INTEGER DEFAULT 0,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            );
+            """
+        )
+        c.execute(
+            """
             CREATE TABLE IF NOT EXISTS conversations (
                 id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
                 conv_id TEXT NOT NULL UNIQUE,
@@ -228,3 +239,59 @@ def delete_task_by_id(conn, task_specs):
     cur.execute("DELETE FROM tasks WHERE user_id=? AND id=?", task_specs)
     conn.commit()
     return cur.rowcount > 0
+
+
+# --- User Functions ---
+
+def get_user(conn, user_id):
+    """
+    Retrieve user settings
+    :param conn:
+    :param user_id:
+    :return: user dict or None
+    """
+    cur = conn.cursor()
+    cur.execute("SELECT user_id, api_key, model_name, grounding FROM users WHERE user_id=?", (user_id,))
+    item = cur.fetchone()
+    if item:
+        return {
+            "user_id": item[0],
+            "api_key": item[1],
+            "model_name": item[2],
+            "grounding": item[3]
+        }
+    return None
+
+
+def update_user_api_key(conn, user_id, api_key):
+    """
+    Update or create user API key
+    """
+    sql = """ INSERT INTO users(user_id, api_key)
+              VALUES(?,?)
+              ON CONFLICT(user_id) DO UPDATE SET
+              api_key=excluded.api_key """
+    cur = conn.cursor()
+    cur.execute(sql, (user_id, api_key))
+    conn.commit()
+
+
+def update_user_settings(conn, user_id, model_name=None, grounding=None):
+    """
+    Update user settings
+    """
+    if model_name is not None and grounding is not None:
+        sql = "UPDATE users SET model_name=?, grounding=? WHERE user_id=?"
+        params = (model_name, grounding, user_id)
+    elif model_name is not None:
+        sql = "UPDATE users SET model_name=? WHERE user_id=?"
+        params = (model_name, user_id)
+    elif grounding is not None:
+        sql = "UPDATE users SET grounding=? WHERE user_id=?"
+        params = (grounding, user_id)
+    else:
+        return
+
+    cur = conn.cursor()
+    cur.execute(sql, params)
+    conn.commit()

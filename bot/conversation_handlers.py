@@ -17,6 +17,8 @@ import PIL.Image
 
 from core import GeminiChat
 from database.database import (
+    create_connection,
+    create_table,
     create_conversation,
     get_user_conversation_count,
     select_conversations_by_user,
@@ -25,6 +27,9 @@ from database.database import (
     create_task,
     get_user_tasks,
     delete_task_by_id,
+    get_user,
+    update_user_api_key,
+    update_user_settings,
 )
 from helpers.inline_paginator import InlineKeyboardPaginator
 from helpers.helpers import conversations_page_content, strip_markdown, split_message, escape_markdown_v2
@@ -35,7 +40,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CHOOSING, IMAGE_CHOICE, CONVERSATION, CONVERSATION_HISTORY, IMAGE_CONVERSATION, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU = range(13)
+CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT = range(12)
 
 # Global reference to scheduler and application for task scheduling
 _scheduler = None
@@ -71,6 +76,19 @@ def restricted(func):
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the conversation with /start command and ask the user for input."""
     logger.info("Received command: /start")
+    
+    user_id = update.effective_user.id
+    from main import conn
+    user = get_user(conn, user_id)
+    
+    if not user or not user.get('api_key'):
+        await update.message.reply_text(_("Welcome! To use this bot, you need to provide your own Gemini API Key. You can get one from Google AI Studio.\n\nPlease enter your API Key now:"))
+        return API_KEY_INPUT
+
+    # Sync context with DB settings
+    context.user_data["api_key"] = user['api_key']
+    context.user_data["model_name"] = user['model_name']
+    context.user_data["web_search"] = bool(user['grounding'])
 
     keyboard = [
         [
@@ -96,6 +114,19 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await update.callback_query.edit_message_text(text=welcome_text, reply_markup=reply_markup)
 
     return CHOOSING
+
+
+@restricted
+async def handle_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Save the user's API key."""
+    api_key = update.message.text.strip()
+    user_id = update.effective_user.id
+    
+    from main import conn
+    update_user_api_key(conn, user_id, api_key)
+    
+    await update.message.reply_text(_("API Key saved successfully! Now you can start using the bot."))
+    return await start(update, context)
 
 
 @restricted
@@ -173,7 +204,8 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             if context.user_data.get("web_search"):
                 tools.append("google_search")
             
-            gemini_chat = GeminiChat(os.getenv("GEMINI_API_TOKEN"), chat_history=history, model_name=model_name, tools=tools)
+            api_key = context.user_data.get("api_key") or os.getenv("GEMINI_API_TOKEN")
+            gemini_chat = GeminiChat(api_key, chat_history=history, model_name=model_name, tools=tools)
             gemini_chat.start_chat()
             context.user_data["gemini_chat"] = gemini_chat
 
@@ -379,7 +411,8 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
     
     # Generate Plan
     msg = await query.edit_message_text(_("Generating plan..."))
-    gemini = GeminiChat(os.getenv("GEMINI_API_TOKEN"))
+    api_key = context.user_data.get("api_key") or os.getenv("GEMINI_API_TOKEN")
+    gemini = GeminiChat(api_key)
     plan_json_str = gemini.generate_plan(prompt)
     context.user_data["task_plan"] = plan_json_str
     context.user_data["task_interval"] = interval
@@ -502,7 +535,13 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
             except Exception as e:
                 logger.error(f"Error in task_wrapper plan processing: {e}")
 
-        gemini = GeminiChat(os.getenv("GEMINI_API_TOKEN"))
+        from main import conn
+        user = get_user(conn, user_id)
+        api_key = user.get('api_key') if user else os.getenv("GEMINI_API_TOKEN")
+        model_name = user.get('model_name') if user else None
+        tools = ["google_search"] if user and user.get('grounding') else []
+
+        gemini = GeminiChat(api_key, model_name=model_name, tools=tools)
         gemini.start_chat()
         response = gemini.send_message(target_prompt)
         parts = split_message(f"Scheduled Task Result:\nPrompt: {prompt}\n\n{response}")
@@ -529,10 +568,21 @@ async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 @restricted
 async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
+    else:
+        # Fallback if somehow called as a command or message
+        return SETTINGS_MENU
     
-    current_model = context.user_data.get("model_name") or os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-    web_search = context.user_data.get("web_search", False)
+    user_id = update.effective_user.id
+    from main import conn
+    user = get_user(conn, user_id)
+    
+    # Debug logging
+    logger.info(f"Opening settings menu for user {user_id}")
+    
+    current_model = user['model_name'] if user and user.get('model_name') else (context.user_data.get("model_name") or os.getenv("GEMINI_MODEL", "gemini-1.5-flash"))
+    web_search = bool(user['grounding']) if user and user.get('grounding') is not None else context.user_data.get("web_search", False)
     
     ws_status = "✅ Enabled" if web_search else "❌ Disabled"
     
@@ -540,18 +590,48 @@ async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
         [InlineKeyboardButton(f"🤖 Model: {current_model}", callback_data="open_models_menu")],
         [InlineKeyboardButton(f"🌐 Web Search: {ws_status}", callback_data="TOGGLE_WEB_SEARCH")],
         [InlineKeyboardButton(_("📁 Storage Management"), callback_data="Storage_Menu")],
+        [InlineKeyboardButton(_("🔑 Update API Key"), callback_data="UPDATE_API_KEY")],
         [InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again")],
     ]
-    await query.edit_message_text(_("Settings Menu"), reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    try:
+        await query.edit_message_text(_("Settings Menu"), reply_markup=InlineKeyboardMarkup(keyboard))
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            logger.error(f"Error editing message: {e}")
+            await context.bot.send_message(chat_id=user_id, text=_("Settings Menu"), reply_markup=InlineKeyboardMarkup(keyboard))
+            
     return SETTINGS_MENU
+
+
+@restricted
+async def update_api_key_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query:
+        await query.answer()
+    else:
+        return SETTINGS_MENU
+        
+    user_id = update.effective_user.id
+    logger.info(f"Initiating API key update for user {user_id}")
+    
+    await query.edit_message_text(_("Please enter your new Gemini API Key:"))
+    return API_KEY_INPUT
 
 @restricted
 async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Show a menu of all available models from Google AI."""
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
+    else:
+        return MODELS_MENU
+        
+    user_id = update.effective_user.id
+    logger.info(f"Opening models menu for user {user_id}")
     
-    models = GeminiChat.list_models()
+    api_key = context.user_data.get("api_key") or os.getenv("GEMINI_API_TOKEN")
+    models = GeminiChat.list_models(api_key=api_key)
     if not models:
         await query.edit_message_text(_("Failed to fetch models or no models available."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Settings_Menu")]]))
         return SETTINGS_MENU
@@ -564,15 +644,31 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         keyboard.append([InlineKeyboardButton(f"{prefix}{m['display_name']}", callback_data=f"SET_MODEL_{m['name']}")])
     
     keyboard.append([InlineKeyboardButton(_("Back"), callback_data="Settings_Menu")])
-    await query.edit_message_text(_("Choose a Gemini Model:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    
+    try:
+        await query.edit_message_text(_("Choose a Gemini Model:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            logger.error(f"Error editing message: {e}")
+            
     return MODELS_MENU
 
 @restricted
 async def set_model_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
+    else:
+        return MODELS_MENU
+        
     model_name = query.data.replace("SET_MODEL_", "")
+    user_id = update.effective_user.id
+    logger.info(f"Setting model to {model_name} for user {user_id}")
+    
+    from main import conn
+    update_user_settings(conn, user_id, model_name=model_name)
     context.user_data["model_name"] = model_name
+    
     await open_models_menu(update, context)
     return MODELS_MENU
 
@@ -580,9 +676,16 @@ async def set_model_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def open_storage_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Show files currently stored in Gemini's temporary storage."""
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
+    else:
+        return STORAGE_MENU
+        
+    user_id = update.effective_user.id
+    logger.info(f"Opening storage menu for user {user_id}")
     
-    files = GeminiChat.list_uploaded_files()
+    api_key = context.user_data.get("api_key") or os.getenv("GEMINI_API_TOKEN")
+    files = GeminiChat.list_uploaded_files(api_key=api_key)
     if not files:
         content = _("No files currently stored in Gemini's temporary storage.")
     else:
@@ -592,14 +695,32 @@ async def open_storage_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
             content += f"• `{f['display_name']}` ({f['mime_type']}, {size_mb:.2f} MB)\n"
     
     keyboard = [[InlineKeyboardButton(_("Back"), callback_data="Settings_Menu")]]
-    await query.edit_message_text(content, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    
+    try:
+        await query.edit_message_text(content, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except BadRequest as e:
+        if "Message is not modified" not in str(e):
+            logger.error(f"Error editing message: {e}")
+            
     return STORAGE_MENU
 
 @restricted
 async def toggle_web_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
-    await query.answer()
+    if query:
+        await query.answer()
+    else:
+        return SETTINGS_MENU
+        
     current = context.user_data.get("web_search", False)
-    context.user_data["web_search"] = not current
+    new_status = not current
+    
+    user_id = update.effective_user.id
+    logger.info(f"Toggling web search to {new_status} for user {user_id}")
+    
+    from main import conn
+    update_user_settings(conn, user_id, grounding=int(new_status))
+    context.user_data["web_search"] = new_status
+    
     await open_settings_menu(update, context)
     return SETTINGS_MENU
