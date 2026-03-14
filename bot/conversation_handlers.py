@@ -402,7 +402,7 @@ async def open_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
     keyboard = [
         [InlineKeyboardButton(_("➕ Add New Task"), callback_data="Tasks_Add")],
         [InlineKeyboardButton(_("📋 List Tasks"), callback_data="Tasks_List")],
-        [InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again")],
+        [InlineKeyboardButton(_("🔙 Back to Main Menu"), callback_data="Start_Again")],
     ]
     await query.edit_message_text(_("Tasks Menu"), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_MENU
@@ -411,13 +411,24 @@ async def open_tasks_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
 async def start_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(_("Enter task prompt:"))
+    
+    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")]]
+    await query.edit_message_text(_("Enter task prompt:"), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_ADD_PROMPT
 
 @restricted
 async def handle_task_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    if query:
+        await query.answer()
+        # If called via back button, we might want to let them re-enter prompt or just show current
+        await query.edit_message_text(_("Enter task prompt:"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")]]))
+        return TASKS_ADD_PROMPT
+    
     context.user_data["task_prompt"] = update.message.text
-    await update.message.reply_text(_("Enter time (HH:MM):"))
+    
+    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Add")]]
+    await update.message.reply_text(_("Enter time (HH:MM):"), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_ADD_TIME
 
 @restricted
@@ -431,6 +442,7 @@ async def handle_task_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             [InlineKeyboardButton(_("Once"), callback_data="Tasks_Interval_once")],
             [InlineKeyboardButton(_("Daily"), callback_data="Tasks_Interval_daily")],
             [InlineKeyboardButton(_("Weekly"), callback_data="Tasks_Interval_weekly")],
+            [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")],
         ]
         await update.message.reply_text(_("Choose interval:"), reply_markup=InlineKeyboardMarkup(keyboard))
         return TASKS_ADD_INTERVAL
@@ -477,7 +489,7 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         return TASKS_CONFIRM_PLAN
     except Exception as e:
         logger.error(f"Failed to parse plan: {e}. Plan: {plan_json_str}")
-        await query.edit_message_text(_("Failed to generate a valid plan. Try again."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Tasks_Add")]]))
+        await query.edit_message_text(_("Failed to generate a valid plan. Try again."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Add")]]))
         return TASKS_MENU
 
 @restricted
@@ -486,7 +498,7 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
     
     if query.data == "Plan_Reject":
-        await query.edit_message_text(_("Plan rejected. Let's start over."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Tasks_Menu")]]))
+        await query.edit_message_text(_("Plan rejected. Let's start over."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")]]))
         return TASKS_MENU
 
     user_id = update.effective_user.id
@@ -521,7 +533,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
     
     tasks = get_user_tasks(conn, update.effective_user.id)
     if not tasks:
-        await query.edit_message_text(_("No tasks."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Tasks_Menu")]]))
+        await query.edit_message_text(_("No tasks."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")]]))
         return TASKS_MENU
         
     text = _("Your tasks:\n")
@@ -530,7 +542,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE, conn) -
         text += f"ID: {t['id']} | {t['run_time']} | {t['interval']} | {t['prompt'][:20]}...\n"
         keyboard.append([InlineKeyboardButton(_(f"Delete Task #{t['id']}"), callback_data=f"TASK_DELETE#{t['id']}")])
     
-    keyboard.append([InlineKeyboardButton(_("Back"), callback_data="Tasks_Menu")])
+    keyboard.append([InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_MENU
 
@@ -546,7 +558,7 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
                 _scheduler.remove_job(str(task_id))
             except:
                 pass
-        await query.edit_message_text(_("Task deleted."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Tasks_Menu")]]))
+        await query.edit_message_text(_("Task deleted."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to List"), callback_data="Tasks_List")]]))
     return TASKS_MENU
 
 def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=None, start_date=None):

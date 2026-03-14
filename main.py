@@ -121,12 +121,15 @@ def states():
         ],
         TASKS_ADD_PROMPT: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_prompt),
+            CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
         ],
         TASKS_ADD_TIME: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_time),
+            CallbackQueryHandler(start_add_task, pattern="^Tasks_Add$"),
         ],
         TASKS_ADD_INTERVAL: [
             CallbackQueryHandler(lambda update, context: handle_task_interval(update, context, conn), pattern="^Tasks_Interval_"),
+            CallbackQueryHandler(lambda update, context: handle_task_prompt(update, context), pattern="^Back_To_Prompt$"),
         ],
         TASKS_CONFIRM_PLAN: [
             CallbackQueryHandler(lambda update, context: handle_task_plan_approval(update, context, conn), pattern="^Plan_"),
