@@ -27,11 +27,13 @@ _genai_lock = threading.Lock()
 
 
 class GeminiChat:
-    def __init__(self, gemini_token: str, chat_history: List[Dict[str, Any]] = None, model_name: str = None, tools: List[str] = None, system_instruction: str = None, knowledge_base: List[Dict[str, Any]] = None):
+    def __init__(self, gemini_token: str, chat_history: List[Dict[str, Any]] = None, model_name: str = None, tools: List[str] = None, system_instruction: str = None, knowledge_base: List[Dict[str, Any]] = None, pinned_context: str = None, language: str = None):
         self.chat_history = chat_history if chat_history else []
         self.gemini_token = gemini_token
         self.system_instruction = system_instruction
         self.knowledge_base = knowledge_base if knowledge_base else []
+        self.pinned_context = pinned_context
+        self.language = language
 
         with _genai_lock:
             genai.configure(api_key=self.gemini_token)
@@ -101,13 +103,14 @@ class GeminiChat:
             else:
                 history.extend(self.chat_history)
 
-        lang = os.getenv("LANGUAGE", "en")
+        lang = self.language if self.language and self.language != "auto" else os.getenv("LANGUAGE", "en")
+        lang_instruction = f"Please respond in {lang} language. " if lang != "auto" else "Respond in the same language the user writes in. "
         self.chat = model.start_chat(history=history)
 
         # System instructions
         if not history:
             base_instruction = (
-                f"You are a helpful assistant with a female persona. Please respond in {lang} language. "
+                f"You are a helpful assistant with a female persona. {lang_instruction}"
                 "Use standard Markdown formatting only: *bold*, _italic_, `code`, and ```code blocks```. "
                 "Do NOT use headers (#), horizontal rules (---), or complex tables. "
                 "Do NOT escape special characters with backslashes. Just write naturally."
@@ -115,6 +118,9 @@ class GeminiChat:
 
             if self.system_instruction:
                 base_instruction += f"\n\nAdditional instructions for your persona: {self.system_instruction}"
+
+            if self.pinned_context:
+                base_instruction += f"\n\nIMPORTANT persistent context from the user (always keep in mind): {self.pinned_context}"
 
             if self.knowledge_base:
                 base_instruction += "\n\nYou have access to the following documents from your knowledge base (context preview):"
@@ -191,6 +197,73 @@ class GeminiChat:
         )
         metrics.record_latency("gemini_send_message", time.monotonic() - start_time)
         return result
+
+    async def async_send_message_streaming(self, message_text: str, on_update, image=None, file_path=None, file_mime_type=None) -> str:
+        """Send message with streaming, calling on_update periodically with accumulated text."""
+        loop = asyncio.get_event_loop()
+        result_queue = asyncio.Queue()
+
+        def _stream():
+            try:
+                content = []
+                if message_text:
+                    content.append(message_text)
+                if image:
+                    content.append(image)
+                if file_path and file_mime_type:
+                    try:
+                        with _genai_lock:
+                            genai.configure(api_key=self.gemini_token)
+                            uploaded_file = genai.upload_file(path=file_path, mime_type=file_mime_type)
+                        content.append(uploaded_file)
+                    except Exception as e:
+                        logging.error(f"Failed to upload file in streaming: {e}")
+
+                if not content:
+                    loop.call_soon_threadsafe(result_queue.put_nowait, ('done', 'No content to send.'))
+                    return
+
+                response = self.chat.send_message(content, stream=True)
+                full_text = ""
+                for chunk in response:
+                    if hasattr(chunk, 'text') and chunk.text:
+                        full_text += chunk.text
+                        loop.call_soon_threadsafe(result_queue.put_nowait, ('chunk', full_text))
+
+                metrics.increment("gemini_messages_sent")
+                loop.call_soon_threadsafe(result_queue.put_nowait, ('done', full_text))
+            except Exception as e:
+                loop.call_soon_threadsafe(result_queue.put_nowait, ('error', e))
+
+        start_time = time.monotonic()
+        _executor.submit(_stream)
+
+        last_update_time = 0
+        final_text = ""
+        while True:
+            try:
+                msg_type, data = await asyncio.wait_for(result_queue.get(), timeout=60)
+                if msg_type == 'done':
+                    final_text = data
+                    break
+                elif msg_type == 'error':
+                    raise data
+                elif msg_type == 'chunk':
+                    now = time.monotonic()
+                    if now - last_update_time >= 1.5:
+                        try:
+                            await on_update(data)
+                        except Exception:
+                            pass
+                        last_update_time = now
+                    final_text = data
+            except asyncio.TimeoutError:
+                if final_text:
+                    break
+                raise TimeoutError("Streaming response timed out")
+
+        metrics.record_latency("gemini_send_message_streaming", time.monotonic() - start_time)
+        return final_text
 
     def get_chat_title(self) -> str:
         try:

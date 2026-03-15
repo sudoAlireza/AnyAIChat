@@ -10,6 +10,7 @@ from telegram.ext import (
     CommandHandler,
     CallbackQueryHandler,
     MessageHandler,
+    InlineQueryHandler,
     filters,
     ConversationHandler,
 )
@@ -61,6 +62,28 @@ from bot.conversation_handlers import (
     delete_knowledge_handler,
     generate_image_handler,
     check_reminders_task,
+    # New feature handlers
+    search_menu_handler,
+    handle_search_input,
+    browse_tags_handler,
+    tag_browse_results_handler,
+    export_conversation_handler,
+    share_conversation_handler,
+    tag_conversation_handler,
+    handle_tag_input,
+    remove_tag_handler,
+    usage_dashboard_handler,
+    open_shortcuts_menu,
+    start_add_shortcut,
+    handle_shortcut_input,
+    delete_shortcut_handler,
+    open_pinned_context_menu,
+    handle_pinned_context_input,
+    clear_pinned_context_handler,
+    language_menu_handler,
+    set_language_handler,
+    inline_query_handler,
+    weekly_summary_task,
 )
 from dotenv import load_dotenv
 
@@ -93,7 +116,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT = range(18)
+CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT = range(23)
 
 
 def _check_access_config():
@@ -155,6 +178,8 @@ def states():
             CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
             CallbackQueryHandler(open_reminders_menu, pattern="^Reminders_Menu$"),
             CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
+            CallbackQueryHandler(search_menu_handler, pattern="^Search_Menu$"),
+            CallbackQueryHandler(usage_dashboard_handler, pattern="^Usage_Dashboard$"),
             CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
             CallbackQueryHandler(done, pattern="^End_Conversation$"),
         ],
@@ -170,6 +195,9 @@ def states():
             CallbackQueryHandler(get_conversation_handler, pattern="^CONV_SELECT#"),
             MessageHandler(filters.Regex("^/conv"), get_conversation_handler),
             CallbackQueryHandler(delete_conversation_handler, pattern="^Delete_Conversation$"),
+            CallbackQueryHandler(export_conversation_handler, pattern="^Export_Conversation$"),
+            CallbackQueryHandler(share_conversation_handler, pattern="^Share_Conversation$"),
+            CallbackQueryHandler(tag_conversation_handler, pattern="^Tag_Conversation$"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
         ],
         TASKS_MENU: [
@@ -198,9 +226,13 @@ def states():
         SETTINGS_MENU: [
             CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),
             CallbackQueryHandler(open_persona_menu, pattern="^Persona_Menu$"),
+            CallbackQueryHandler(open_pinned_context_menu, pattern="^Pinned_Context_Menu$"),
+            CallbackQueryHandler(open_shortcuts_menu, pattern="^Shortcuts_Menu$"),
             CallbackQueryHandler(open_storage_menu, pattern="^Storage_Menu$"),
             CallbackQueryHandler(toggle_web_search, pattern="^TOGGLE_WEB_SEARCH$"),
+            CallbackQueryHandler(language_menu_handler, pattern="^Language_Menu$"),
             CallbackQueryHandler(update_api_key_handler, pattern="^UPDATE_API_KEY$"),
+            CallbackQueryHandler(set_language_handler, pattern="^SET_LANG_"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
         ],
         PERSONA_INPUT: [
@@ -235,6 +267,33 @@ def states():
         STORAGE_MENU: [
             CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
+        ],
+        SEARCH_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_search_input),
+            CallbackQueryHandler(browse_tags_handler, pattern="^Browse_Tags$"),
+            CallbackQueryHandler(tag_browse_results_handler, pattern="^TAG_BROWSE#"),
+            CallbackQueryHandler(get_conversation_handler, pattern="^CONV_SELECT#"),
+            CallbackQueryHandler(start_over, pattern="^Start_Again"),
+        ],
+        SHORTCUTS_MENU: [
+            CallbackQueryHandler(start_add_shortcut, pattern="^Add_Shortcut$"),
+            CallbackQueryHandler(delete_shortcut_handler, pattern="^SHORTCUT_DELETE#"),
+            CallbackQueryHandler(open_shortcuts_menu, pattern="^Shortcuts_Menu$"),
+            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
+        ],
+        SHORTCUTS_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_shortcut_input),
+            CallbackQueryHandler(open_shortcuts_menu, pattern="^Shortcuts_Menu$"),
+        ],
+        TAGS_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tag_input),
+            CallbackQueryHandler(remove_tag_handler, pattern="^TAG_REMOVE#"),
+            CallbackQueryHandler(get_conversation_handler, pattern="^CONV_SELECT#"),
+        ],
+        PINNED_CONTEXT_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pinned_context_input),
+            CallbackQueryHandler(clear_pinned_context_handler, pattern="^Clear_Pinned_Context$"),
+            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
         ],
     }
 
@@ -332,6 +391,9 @@ def main() -> None:
     )
     application.add_handler(conv_handler)
 
+    # Inline mode handler (outside ConversationHandler)
+    application.add_handler(InlineQueryHandler(inline_query_handler))
+
     scheduler = AsyncIOScheduler()
     set_scheduler(scheduler, application)
 
@@ -339,6 +401,7 @@ def main() -> None:
     scheduler.add_job(check_reminders_task, 'interval', minutes=REMINDER_CHECK_INTERVAL_MINUTES)
     scheduler.add_job(_cleanup_temp_files_async, 'interval', hours=1)
     scheduler.add_job(log_metrics_task, 'interval', minutes=5)
+    scheduler.add_job(weekly_summary_task, 'cron', day_of_week='sun', hour=10, minute=0)
 
     scheduler.start()
     application.run_polling(allowed_updates=Update.ALL_TYPES)

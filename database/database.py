@@ -96,6 +96,59 @@ async def m003_add_indexes(conn):
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id);")
 
 
+@migration
+async def m004_user_language_and_pinned_context(conn):
+    """v4: Add language and pinned_context columns to users."""
+    try:
+        await conn.execute("ALTER TABLE users ADD COLUMN language TEXT DEFAULT 'auto'")
+    except Exception:
+        pass
+    try:
+        await conn.execute("ALTER TABLE users ADD COLUMN pinned_context TEXT")
+    except Exception:
+        pass
+
+
+@migration
+async def m005_conversation_tags(conn):
+    """v5: Create conversation_tags table."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversation_tags (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            conv_id TEXT NOT NULL,
+            user_id INTEGER NOT NULL,
+            tag TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(conv_id, user_id, tag)
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_conv_tags_user ON conversation_tags(user_id);")
+
+
+@migration
+async def m006_user_shortcuts(conn):
+    """v6: Create user_shortcuts table."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_shortcuts (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            command TEXT NOT NULL,
+            response_text TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_shortcuts_user ON user_shortcuts(user_id);")
+
+
+@migration
+async def m007_recurring_reminders(conn):
+    """v7: Add recurring_interval column to reminders."""
+    try:
+        await conn.execute("ALTER TABLE reminders ADD COLUMN recurring_interval TEXT")
+    except Exception:
+        pass
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -322,7 +375,7 @@ async def mark_task_completed(pool: DatabasePool, task_id: int):
 async def get_user(pool: DatabasePool, user_id):
     """Retrieve user settings, decrypting the API key."""
     row = await pool.execute_fetch_one(
-        "SELECT user_id, api_key, model_name, grounding, system_instruction FROM users WHERE user_id=?",
+        "SELECT user_id, api_key, model_name, grounding, system_instruction, language, pinned_context FROM users WHERE user_id=?",
         (user_id,),
     )
     if row:
@@ -335,6 +388,8 @@ async def get_user(pool: DatabasePool, user_id):
             "model_name": row["model_name"],
             "grounding": row["grounding"],
             "system_instruction": row["system_instruction"],
+            "language": row.get("language", "auto"),
+            "pinned_context": row.get("pinned_context"),
         }
     return None
 
@@ -349,7 +404,7 @@ async def update_user_api_key(pool: DatabasePool, user_id, api_key):
     await pool.execute(sql, (user_id, encrypted_key))
 
 
-async def update_user_settings(pool: DatabasePool, user_id, model_name=None, grounding=None, system_instruction=None):
+async def update_user_settings(pool: DatabasePool, user_id, model_name=None, grounding=None, system_instruction=None, language=None, pinned_context=None):
     """Update user settings."""
     updates = []
     params = []
@@ -363,6 +418,12 @@ async def update_user_settings(pool: DatabasePool, user_id, model_name=None, gro
     if system_instruction is not None:
         updates.append("system_instruction=?")
         params.append(system_instruction)
+    if language is not None:
+        updates.append("language=?")
+        params.append(language)
+    if pinned_context is not None:
+        updates.append("pinned_context=?")
+        params.append(pinned_context)
 
     if not updates:
         return
@@ -407,9 +468,12 @@ async def add_reminder(pool: DatabasePool, reminder):
     """
     Add a new reminder.
     :param pool: DatabasePool
-    :param reminder: (user_id, reminder_text, remind_at)
+    :param reminder: (user_id, reminder_text, remind_at) or (user_id, reminder_text, remind_at, recurring_interval)
     """
-    sql = "INSERT INTO reminders(user_id, reminder_text, remind_at) VALUES(?,?,?)"
+    if len(reminder) == 4:
+        sql = "INSERT INTO reminders(user_id, reminder_text, remind_at, recurring_interval) VALUES(?,?,?,?)"
+    else:
+        sql = "INSERT INTO reminders(user_id, reminder_text, remind_at) VALUES(?,?,?)"
     return await pool.execute_insert(sql, reminder)
 
 
@@ -417,10 +481,10 @@ async def get_pending_reminders(pool: DatabasePool):
     """Retrieve pending reminders that are due (optimized with time filter)."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
     rows = await pool.execute_fetch_all(
-        "SELECT id, user_id, reminder_text, remind_at FROM reminders WHERE status='pending' AND remind_at <= ?",
+        "SELECT id, user_id, reminder_text, remind_at, recurring_interval FROM reminders WHERE status='pending' AND remind_at <= ?",
         (now,),
     )
-    return [{"id": r["id"], "user_id": r["user_id"], "reminder_text": r["reminder_text"], "remind_at": r["remind_at"]} for r in rows]
+    return [{"id": r["id"], "user_id": r["user_id"], "reminder_text": r["reminder_text"], "remind_at": r["remind_at"], "recurring_interval": r.get("recurring_interval")} for r in rows]
 
 
 async def update_reminder_status(pool: DatabasePool, reminder_id, status):
@@ -433,10 +497,10 @@ async def update_reminder_status(pool: DatabasePool, reminder_id, status):
 async def get_user_reminders(pool: DatabasePool, user_id):
     """Retrieve reminders for a user."""
     rows = await pool.execute_fetch_all(
-        "SELECT id, reminder_text, remind_at, status FROM reminders WHERE user_id=? ORDER BY remind_at DESC",
+        "SELECT id, reminder_text, remind_at, status, recurring_interval FROM reminders WHERE user_id=? ORDER BY remind_at DESC",
         (user_id,),
     )
-    return [{"id": r["id"], "reminder_text": r["reminder_text"], "remind_at": r["remind_at"], "status": r["status"]} for r in rows]
+    return [{"id": r["id"], "reminder_text": r["reminder_text"], "remind_at": r["remind_at"], "status": r["status"], "recurring_interval": r.get("recurring_interval")} for r in rows]
 
 
 async def delete_reminder(pool: DatabasePool, user_id, reminder_id):
@@ -445,3 +509,126 @@ async def delete_reminder(pool: DatabasePool, user_id, reminder_id):
         "DELETE FROM reminders WHERE user_id=? AND id=?", (user_id, reminder_id)
     )
     return count > 0
+
+
+# --- Search Functions ---
+
+async def search_conversations(pool: DatabasePool, user_id, query):
+    """Search conversations by keyword in title or history."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, conv_id, title, created_at FROM conversations "
+        "WHERE user_id=? AND (title LIKE ? OR history LIKE ?) ORDER BY id DESC LIMIT 20",
+        (user_id, f"%{query}%", f"%{query}%"),
+    )
+    return [{"id": r["id"], "conversation_id": r["conv_id"], "title": r["title"], "created_at": r["created_at"]} for r in rows]
+
+
+# --- Tag Functions ---
+
+async def add_conversation_tag(pool: DatabasePool, user_id, conv_id, tag):
+    """Tag a conversation."""
+    sql = "INSERT OR IGNORE INTO conversation_tags(conv_id, user_id, tag) VALUES(?,?,?)"
+    return await pool.execute_insert(sql, (conv_id, user_id, tag))
+
+
+async def get_user_tags(pool: DatabasePool, user_id):
+    """Get all distinct tags for a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT DISTINCT tag FROM conversation_tags WHERE user_id=? ORDER BY tag",
+        (user_id,),
+    )
+    return [r["tag"] for r in rows]
+
+
+async def get_conversations_by_tag(pool: DatabasePool, user_id, tag):
+    """Get conversations with a specific tag."""
+    rows = await pool.execute_fetch_all(
+        "SELECT c.id, c.conv_id, c.title, c.created_at FROM conversations c "
+        "INNER JOIN conversation_tags ct ON c.conv_id = ct.conv_id AND c.user_id = ct.user_id "
+        "WHERE c.user_id=? AND ct.tag=? ORDER BY c.id DESC",
+        (user_id, tag),
+    )
+    return [{"id": r["id"], "conversation_id": r["conv_id"], "title": r["title"], "created_at": r["created_at"]} for r in rows]
+
+
+async def get_conversation_tags(pool: DatabasePool, user_id, conv_id):
+    """Get tags for a specific conversation."""
+    rows = await pool.execute_fetch_all(
+        "SELECT tag FROM conversation_tags WHERE user_id=? AND conv_id=?",
+        (user_id, conv_id),
+    )
+    return [r["tag"] for r in rows]
+
+
+async def remove_conversation_tag(pool: DatabasePool, user_id, conv_id, tag):
+    """Remove a tag from a conversation."""
+    count = await pool.execute_delete(
+        "DELETE FROM conversation_tags WHERE conv_id=? AND user_id=? AND tag=?",
+        (conv_id, user_id, tag),
+    )
+    return count > 0
+
+
+# --- Shortcut Functions ---
+
+async def add_shortcut(pool: DatabasePool, user_id, command, response_text):
+    """Add a user shortcut."""
+    sql = "INSERT INTO user_shortcuts(user_id, command, response_text) VALUES(?,?,?)"
+    return await pool.execute_insert(sql, (user_id, command, response_text))
+
+
+async def get_user_shortcuts(pool: DatabasePool, user_id):
+    """Get all shortcuts for a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, command, response_text FROM user_shortcuts WHERE user_id=?",
+        (user_id,),
+    )
+    return [{"id": r["id"], "command": r["command"], "response_text": r["response_text"]} for r in rows]
+
+
+async def delete_shortcut(pool: DatabasePool, user_id, shortcut_id):
+    """Delete a shortcut."""
+    count = await pool.execute_delete(
+        "DELETE FROM user_shortcuts WHERE user_id=? AND id=?", (user_id, shortcut_id)
+    )
+    return count > 0
+
+
+async def get_shortcut_by_command(pool: DatabasePool, user_id, command):
+    """Get a shortcut by its command name."""
+    row = await pool.execute_fetch_one(
+        "SELECT id, command, response_text FROM user_shortcuts WHERE user_id=? AND command=?",
+        (user_id, command),
+    )
+    if row:
+        return {"id": row["id"], "command": row["command"], "response_text": row["response_text"]}
+    return None
+
+
+# --- Stats Functions ---
+
+async def get_user_stats(pool: DatabasePool, user_id):
+    """Get usage statistics for a user."""
+    stats = {}
+    r = await pool.execute_fetch_one("SELECT COUNT(*) as c FROM conversations WHERE user_id=?", (user_id,))
+    stats["conversations"] = r["c"] if r else 0
+
+    r = await pool.execute_fetch_one("SELECT COUNT(*) as c FROM tasks WHERE user_id=? AND status='active'", (user_id,))
+    stats["active_tasks"] = r["c"] if r else 0
+
+    r = await pool.execute_fetch_one("SELECT COUNT(*) as c FROM tasks WHERE user_id=?", (user_id,))
+    stats["total_tasks"] = r["c"] if r else 0
+
+    r = await pool.execute_fetch_one("SELECT COUNT(*) as c FROM reminders WHERE user_id=?", (user_id,))
+    stats["total_reminders"] = r["c"] if r else 0
+
+    r = await pool.execute_fetch_one("SELECT COUNT(*) as c FROM reminders WHERE user_id=? AND status='completed'", (user_id,))
+    stats["completed_reminders"] = r["c"] if r else 0
+
+    r = await pool.execute_fetch_one("SELECT COUNT(*) as c FROM knowledge_base WHERE user_id=?", (user_id,))
+    stats["knowledge_docs"] = r["c"] if r else 0
+
+    r = await pool.execute_fetch_one("SELECT MIN(created_at) as first FROM conversations WHERE user_id=?", (user_id,))
+    stats["member_since"] = r["first"] if r and r["first"] else None
+
+    return stats

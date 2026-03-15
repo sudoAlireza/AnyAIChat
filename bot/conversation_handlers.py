@@ -9,12 +9,13 @@ import asyncio
 import contextvars
 import google.generativeai as genai
 from functools import wraps
-from datetime import datetime
+from datetime import datetime, timedelta
+import time
 
 # Context variable to propagate user_id into all log records within a handler
 _current_user_id = contextvars.ContextVar('current_user_id', default='-')
 
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
@@ -49,6 +50,17 @@ from database.database import (
     delete_reminder,
     get_pending_reminders,
     update_reminder_status,
+    search_conversations,
+    add_conversation_tag,
+    get_user_tags,
+    get_conversations_by_tag,
+    get_conversation_tags,
+    remove_conversation_tag,
+    add_shortcut,
+    get_user_shortcuts,
+    delete_shortcut,
+    get_shortcut_by_command,
+    get_user_stats,
 )
 from helpers.inline_paginator import InlineKeyboardPaginator
 from helpers.helpers import conversations_page_content, strip_markdown, split_message, escape_markdown_v2
@@ -68,7 +80,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT = range(18)
+CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT = range(23)
 
 # Global reference to scheduler and application for task scheduling
 _scheduler = None
@@ -166,6 +178,10 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         [
             InlineKeyboardButton(_("⏰ Reminders"), callback_data="Reminders_Menu"),
             InlineKeyboardButton(_("📚 Knowledge"), callback_data="Knowledge_Menu"),
+        ],
+        [
+            InlineKeyboardButton(_("🔍 Search"), callback_data="Search_Menu"),
+            InlineKeyboardButton(_("📊 Usage"), callback_data="Usage_Dashboard"),
         ],
         [InlineKeyboardButton(_("⚙️ Settings"), callback_data="Settings_Menu")],
     ]
@@ -278,6 +294,10 @@ async def start_menu_new_message(update: Update, context: ContextTypes.DEFAULT_T
             InlineKeyboardButton(_("⏰ Reminders"), callback_data="Reminders_Menu"),
             InlineKeyboardButton(_("📚 Knowledge"), callback_data="Knowledge_Menu"),
         ],
+        [
+            InlineKeyboardButton(_("🔍 Search"), callback_data="Search_Menu"),
+            InlineKeyboardButton(_("📊 Usage"), callback_data="Usage_Dashboard"),
+        ],
         [InlineKeyboardButton(_("⚙️ Settings"), callback_data="Settings_Menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
@@ -343,6 +363,8 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             user_data = await get_user(pool, user_id)
             model_name = user_data.get('model_name') if user_data else context.user_data.get("model_name")
             system_instruction = user_data.get('system_instruction') if user_data else context.user_data.get("system_instruction")
+            pinned_context = user_data.get('pinned_context') if user_data else None
+            user_language = user_data.get('language', 'auto') if user_data else 'auto'
             knowledge = await get_user_knowledge(pool, user_id)
 
             tools = []
@@ -350,7 +372,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
                 tools.append("google_search")
 
             api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
-            gemini_chat = GeminiChat(api_key, chat_history=history, model_name=model_name, tools=tools, system_instruction=system_instruction, knowledge_base=knowledge)
+            gemini_chat = GeminiChat(api_key, chat_history=history, model_name=model_name, tools=tools, system_instruction=system_instruction, knowledge_base=knowledge, pinned_context=pinned_context, language=user_language)
             await gemini_chat.async_start_chat()
             context.user_data["gemini_chat"] = gemini_chat
 
@@ -420,7 +442,21 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Phase 6.1: Re-send typing for long operations
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-        response_text = await gemini_chat.async_send_message(prompt, image=image, file_path=file_path, file_mime_type=file_mime_type)
+
+        # Try streaming first for text-only messages, fall back to regular
+        try:
+            async def _stream_update(partial):
+                try:
+                    await msg.edit_text(partial + " ▍")
+                except BadRequest:
+                    pass
+
+            response_text = await gemini_chat.async_send_message_streaming(
+                prompt, on_update=_stream_update, image=image, file_path=file_path, file_mime_type=file_mime_type
+            )
+        except Exception as stream_err:
+            logger.warning(f"Streaming failed, falling back to regular: {stream_err}")
+            response_text = await gemini_chat.async_send_message(prompt, image=image, file_path=file_path, file_mime_type=file_mime_type)
 
         # Phase 4.3: Conversation length warning
         history_length = gemini_chat.get_history_length()
@@ -435,6 +471,31 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             context.user_data["conversation_id"] = None
         elif history_length >= CONVERSATION_WARNING_THRESHOLD:
             response_text += "\n\n⚠️ This conversation is getting long. Consider starting a new conversation for better performance."
+
+        # File Output: detect code blocks and offer as downloadable files
+        code_blocks = re.findall(r'```(\w*)\n(.*?)```', response_text, re.DOTALL)
+        if code_blocks:
+            ext_map = {
+                'python': '.py', 'javascript': '.js', 'typescript': '.ts', 'java': '.java',
+                'go': '.go', 'rust': '.rs', 'cpp': '.cpp', 'c': '.c', 'html': '.html',
+                'css': '.css', 'sql': '.sql', 'bash': '.sh', 'shell': '.sh',
+                'yaml': '.yaml', 'json': '.json', 'xml': '.xml', 'ruby': '.rb',
+                'php': '.php', 'swift': '.swift', 'kotlin': '.kt',
+            }
+            for lang, code in code_blocks:
+                if len(code.strip()) > 50:
+                    ext = ext_map.get(lang.lower(), '.txt') if lang else '.txt'
+                    file_name = f"code_{uuid.uuid4().hex[:6]}{ext}"
+                    file_buf = io.BytesIO(code.strip().encode('utf-8'))
+                    file_buf.name = file_name
+                    try:
+                        await message.reply_document(
+                            document=file_buf,
+                            filename=file_name,
+                            caption=f"📄 Code output ({lang or 'text'})"
+                        )
+                    except Exception as fe:
+                        logger.warning(f"Failed to send code file: {fe}")
 
         keyboard = [
             [
@@ -566,8 +627,18 @@ async def get_conversation_handler(update: Update, context: ContextTypes.DEFAULT
             detail += f"\n*Last messages:*\n{last_exchange}\n"
         detail += "\n" + "━" * 24
 
+        # Get tags for this conversation
+        tags = await get_conversation_tags(pool, user_id, conv_id)
+        if tags:
+            detail += f"\n🏷 Tags: {', '.join(tags)}"
+
         keyboard = [
             [InlineKeyboardButton(_("▶️ Continue Conversation"), callback_data="New_Conversation")],
+            [
+                InlineKeyboardButton(_("🏷 Tag"), callback_data="Tag_Conversation"),
+                InlineKeyboardButton(_("📤 Export"), callback_data="Export_Conversation"),
+                InlineKeyboardButton(_("🔗 Share"), callback_data="Share_Conversation"),
+            ],
             [
                 InlineKeyboardButton(_("🗑 Delete"), callback_data="Delete_Conversation"),
                 InlineKeyboardButton(_("📋 Back to List"), callback_data="PAGE#1"),
@@ -972,10 +1043,15 @@ async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     ws_status = "✅ Enabled" if web_search else "❌ Disabled"
 
+    user_lang = user.get('language', 'auto') if user else 'auto'
+
     keyboard = [
         [InlineKeyboardButton(f"🤖 Model: {current_model}", callback_data="open_models_menu")],
         [InlineKeyboardButton(f"🎭 Custom Persona", callback_data="Persona_Menu")],
+        [InlineKeyboardButton(f"📌 Pinned Context", callback_data="Pinned_Context_Menu")],
+        [InlineKeyboardButton(f"⚡ Quick Shortcuts", callback_data="Shortcuts_Menu")],
         [InlineKeyboardButton(f"🌐 Web Search: {ws_status}", callback_data="TOGGLE_WEB_SEARCH")],
+        [InlineKeyboardButton(f"🌍 Language: {user_lang}", callback_data="Language_Menu")],
         [InlineKeyboardButton(_("📁 Storage Management"), callback_data="Storage_Menu")],
         [InlineKeyboardButton(_("🔑 Update API Key"), callback_data="UPDATE_API_KEY")],
         [InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again")],
@@ -1146,7 +1222,8 @@ async def open_reminders_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
     if reminders:
         for r in reminders[:10]:
             status = "✅" if r['status'] == 'completed' else "⏳"
-            text += f"{status} {r['remind_at']}: {r['reminder_text']}\n"
+            recurring = f" 🔄{r['recurring_interval']}" if r.get('recurring_interval') else ""
+            text += f"{status} {r['remind_at']}: {r['reminder_text']}{recurring}\n"
             keyboard.append([InlineKeyboardButton(_(f"Delete Reminder #{r['id']}"), callback_data=f"REMINDER_DELETE#{r['id']}")])
     else:
         text += "No reminders found."
@@ -1159,25 +1236,76 @@ async def open_reminders_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def start_add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(_("Please enter your reminder in format: YYYY-MM-DD HH:MM UTC | Reminder text\nExample: 2026-03-20 15:30 | Call Mom"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Reminders_Menu")]]))
+    await query.edit_message_text(
+        _("Enter your reminder:\n\n"
+          "Standard format: YYYY-MM-DD HH:MM | Reminder text\n"
+          "Example: 2026-03-20 15:30 | Call Mom\n\n"
+          "Or use natural language:\n"
+          "• \"remind me to buy milk tomorrow at 5pm\"\n"
+          "• \"call dentist next Monday at 10am\"\n"
+          "• \"daily standup every day at 9am\""),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Reminders_Menu")]])
+    )
     return REMINDERS_INPUT
 
 @restricted
 async def handle_reminder_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = update.message.text
+    user_id = update.effective_user.id
+    pool = _get_pool(context)
+    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to Reminders"), callback_data="Reminders_Menu")]])
+
+    # First try standard format: YYYY-MM-DD HH:MM | text
     try:
         time_part, msg_part = [s.strip() for s in text.split('|')]
         datetime.strptime(time_part, "%Y-%m-%d %H:%M")
-
-        user_id = update.effective_user.id
-        pool = _get_pool(context)
         await add_reminder(pool, (user_id, msg_part, time_part))
-
-        await update.message.reply_text(_("Reminder saved!"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to Reminders"), callback_data="Reminders_Menu")]]))
+        await update.message.reply_text(_("✅ Reminder saved!"), reply_markup=back_btn)
         return REMINDERS_MENU
-    except (ValueError, IndexError) as e:
-        logger.warning(f"Invalid reminder format from user: {e}")
-        await update.message.reply_text(_("Invalid format. Use YYYY-MM-DD HH:MM | Reminder text"))
+    except (ValueError, IndexError):
+        pass
+
+    # Smart NLP parsing with Gemini
+    await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    try:
+        api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+        gemini = GeminiChat(api_key)
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        parse_prompt = (
+            f"Parse this reminder request into a structured format. Current UTC time is {now}.\n"
+            f"Input: \"{text}\"\n"
+            "Return ONLY a JSON object with: 'text' (reminder text), 'datetime' (YYYY-MM-DD HH:MM format), "
+            "'recurring' (null, 'daily', or 'weekly'). No other text or markdown."
+        )
+        await gemini.async_start_chat()
+        result = await gemini.async_send_message(parse_prompt)
+        parsed = json.loads(result.strip().replace("```json", "").replace("```", ""))
+
+        remind_text = parsed.get('text', text)
+        remind_time = parsed.get('datetime')
+        recurring = parsed.get('recurring')
+
+        if not remind_time:
+            raise ValueError("No datetime parsed")
+        datetime.strptime(remind_time, "%Y-%m-%d %H:%M")
+
+        if recurring:
+            await add_reminder(pool, (user_id, remind_text, remind_time, recurring))
+        else:
+            await add_reminder(pool, (user_id, remind_text, remind_time))
+
+        recurring_text = f" (🔄 {recurring})" if recurring else ""
+        await update.message.reply_text(
+            f"✅ Reminder set!\n\n📝 {remind_text}\n⏰ {remind_time}{recurring_text}",
+            reply_markup=back_btn
+        )
+        return REMINDERS_MENU
+    except Exception as e:
+        logger.warning(f"NLP reminder parsing failed: {e}")
+        await update.message.reply_text(
+            _("Couldn't understand that. Please use format:\nYYYY-MM-DD HH:MM | Reminder text\n\nOr try natural language like 'remind me to call mom tomorrow at 3pm'"),
+            reply_markup=back_btn
+        )
         return REMINDERS_INPUT
 
 @restricted
@@ -1307,7 +1435,25 @@ async def check_reminders_task():
 
     for r in reminders:
         try:
-            await _application.bot.send_message(chat_id=r['user_id'], text=f"⏰ REMINDER: {r['reminder_text']}")
+            recurring_text = f"\n🔄 Recurring: {r['recurring_interval']}" if r.get('recurring_interval') else ""
+            await _application.bot.send_message(chat_id=r['user_id'], text=f"⏰ REMINDER: {r['reminder_text']}{recurring_text}")
+
+            if r.get('recurring_interval'):
+                # Schedule next occurrence
+                try:
+                    current_time = datetime.strptime(r['remind_at'], "%Y-%m-%d %H:%M")
+                    if r['recurring_interval'] == 'daily':
+                        next_time = current_time + timedelta(days=1)
+                    elif r['recurring_interval'] == 'weekly':
+                        next_time = current_time + timedelta(weeks=1)
+                    else:
+                        next_time = None
+
+                    if next_time:
+                        await add_reminder(pool, (r['user_id'], r['reminder_text'], next_time.strftime("%Y-%m-%d %H:%M"), r['recurring_interval']))
+                except Exception as re:
+                    logger.error(f"Failed to schedule recurring reminder: {re}")
+
             await update_reminder_status(pool, r['id'], 'completed')
         except Exception as e:
             logger.error(f"Failed to send reminder: {e}")
@@ -1332,3 +1478,631 @@ async def toggle_web_search(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await open_settings_menu(update, context)
     return SETTINGS_MENU
+
+
+# --- Search Handlers ---
+
+@restricted
+async def search_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Open search input."""
+    query = update.callback_query
+    await query.answer()
+
+    keyboard = [
+        [InlineKeyboardButton(_("🏷 Browse by Tag"), callback_data="Browse_Tags")],
+        [InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")],
+    ]
+    await query.edit_message_text(
+        _("🔍 *Search Conversations*\n\nType a keyword to search across all your conversations, or browse by tag."),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    return SEARCH_INPUT
+
+
+@restricted
+async def handle_search_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Process search query."""
+    search_query = update.message.text.strip()
+    if not search_query or len(search_query) < 2:
+        await update.message.reply_text(_("Please enter at least 2 characters to search."))
+        return SEARCH_INPUT
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    results = await search_conversations(pool, user_id, search_query)
+
+    if not results:
+        keyboard = [[InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")]]
+        await update.message.reply_text(
+            _("No conversations found matching your search."),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CHOOSING
+
+    text = f"🔍 *Search Results for \"{search_query}\"*\n\n"
+    keyboard = []
+    for r in results[:10]:
+        title = r['title'][:35] + "..." if len(r['title']) > 35 else r['title']
+        keyboard.append([InlineKeyboardButton(
+            f"💬 {title}",
+            callback_data=f"CONV_SELECT#{r['conversation_id']}"
+        )])
+
+    keyboard.append([InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")])
+
+    try:
+        await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        await update.message.reply_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+    return CONVERSATION_HISTORY
+
+
+@restricted
+async def browse_tags_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Browse conversations by tag."""
+    query = update.callback_query
+    await query.answer()
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    tags = await get_user_tags(pool, user_id)
+
+    if not tags:
+        keyboard = [[InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")]]
+        await query.edit_message_text(_("No tags found. Tag conversations from the History detail view."), reply_markup=InlineKeyboardMarkup(keyboard))
+        return CHOOSING
+
+    keyboard = []
+    for tag in tags:
+        keyboard.append([InlineKeyboardButton(f"🏷 {tag}", callback_data=f"TAG_BROWSE#{tag}")])
+    keyboard.append([InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")])
+
+    await query.edit_message_text(_("🏷 *Your Tags*\n\nSelect a tag to see conversations:"), reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    return SEARCH_INPUT
+
+
+@restricted
+async def tag_browse_results_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show conversations with a specific tag."""
+    query = update.callback_query
+    await query.answer()
+    tag = query.data.split("#")[1]
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    results = await get_conversations_by_tag(pool, user_id, tag)
+
+    if not results:
+        keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Browse_Tags")]]
+        await query.edit_message_text(_(f"No conversations with tag '{tag}'."), reply_markup=InlineKeyboardMarkup(keyboard))
+        return SEARCH_INPUT
+
+    text = f"🏷 *Conversations tagged \"{tag}\"*\n\n"
+    keyboard = []
+    for r in results[:10]:
+        title = r['title'][:35] + "..." if len(r['title']) > 35 else r['title']
+        keyboard.append([InlineKeyboardButton(f"💬 {title}", callback_data=f"CONV_SELECT#{r['conversation_id']}")])
+    keyboard.append([InlineKeyboardButton(_("🔙 Back to Tags"), callback_data="Browse_Tags")])
+
+    try:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+    return CONVERSATION_HISTORY
+
+
+# --- Export Conversation Handler ---
+
+@restricted
+async def export_conversation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Export conversation as a text/markdown file."""
+    query = update.callback_query
+    await query.answer()
+
+    conv_id = context.user_data.get("conversation_id")
+    if not conv_id:
+        return CONVERSATION_HISTORY
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    conv = await select_conversation_by_id(pool, (user_id, conv_id))
+    if not conv:
+        await query.edit_message_text(_("Conversation not found."))
+        return CONVERSATION_HISTORY
+
+    title = conv.get('title', 'Untitled')
+    history = json.loads(conv.get('history', '[]'))
+
+    # Format as markdown
+    text = f"# {title}\n\n"
+    text += f"Exported on: {datetime.now().strftime('%Y-%m-%d %H:%M')}\n\n---\n\n"
+    for entry in history:
+        role = entry.get('role', 'unknown')
+        parts = entry.get('parts', [])
+        for p in parts:
+            if p.get('text'):
+                prefix = "**User:**" if role == "user" else "**Assistant:**"
+                text += f"{prefix}\n{p['text']}\n\n---\n\n"
+
+    file_buf = io.BytesIO(text.encode('utf-8'))
+    safe_title = re.sub(r'[^\w\s-]', '', title)[:30].strip()
+    file_name = f"{safe_title or 'conversation'}.md"
+    file_buf.name = file_name
+
+    await context.bot.send_document(
+        chat_id=update.effective_chat.id,
+        document=file_buf,
+        filename=file_name,
+        caption=f"📤 Exported: {title}"
+    )
+
+    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data=f"CONV_SELECT#{conv_id}")]]
+    await query.edit_message_text(_("Conversation exported!"), reply_markup=InlineKeyboardMarkup(keyboard))
+    return CONVERSATION_HISTORY
+
+
+# --- Share Conversation Handler ---
+
+@restricted
+async def share_conversation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Share conversation as formatted text."""
+    query = update.callback_query
+    await query.answer()
+
+    conv_id = context.user_data.get("conversation_id")
+    if not conv_id:
+        return CONVERSATION_HISTORY
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    conv = await select_conversation_by_id(pool, (user_id, conv_id))
+    if not conv:
+        return CONVERSATION_HISTORY
+
+    title = conv.get('title', 'Untitled')
+    history = json.loads(conv.get('history', '[]'))
+
+    # Format for sharing (compact)
+    text = f"💬 *{title}*\n\n"
+    msg_count = 0
+    for entry in history:
+        parts = entry.get('parts', [])
+        for p in parts:
+            if p.get('text'):
+                role = entry.get('role', '')
+                emoji = "👤" if role == "user" else "🤖"
+                content = p['text'][:200]
+                if len(p['text']) > 200:
+                    content += "..."
+                text += f"{emoji} {content}\n\n"
+                msg_count += 1
+                if msg_count >= 10:
+                    break
+        if msg_count >= 10:
+            remaining = len(history) - 10
+            if remaining > 0:
+                text += f"_... and {remaining} more messages_\n"
+            break
+
+    text += f"\n_Shared from Gemini Chat Bot_"
+
+    parts_list = split_message(text)
+    for part in parts_list:
+        try:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=part, parse_mode=ParseMode.MARKDOWN)
+        except BadRequest:
+            await context.bot.send_message(chat_id=update.effective_chat.id, text=strip_markdown(part))
+    return CONVERSATION_HISTORY
+
+
+# --- Tag Conversation Handlers ---
+
+@restricted
+async def tag_conversation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Prompt user to enter a tag for the current conversation."""
+    query = update.callback_query
+    await query.answer()
+
+    conv_id = context.user_data.get("conversation_id")
+    if not conv_id:
+        return CONVERSATION_HISTORY
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    existing_tags = await get_conversation_tags(pool, user_id, conv_id)
+
+    text = "🏷 *Tag this conversation*\n\n"
+    if existing_tags:
+        text += f"Current tags: {', '.join(existing_tags)}\n\n"
+    text += "Type a tag name to add, or tap an existing tag to remove it."
+
+    keyboard = []
+    for tag in existing_tags:
+        keyboard.append([InlineKeyboardButton(f"❌ Remove: {tag}", callback_data=f"TAG_REMOVE#{tag}")])
+    keyboard.append([InlineKeyboardButton(_("🔙 Back"), callback_data=f"CONV_SELECT#{conv_id}")])
+
+    try:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+    return TAGS_INPUT
+
+
+@restricted
+async def handle_tag_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Save a new tag for the current conversation."""
+    tag = update.message.text.strip().lower()[:30]
+    if not tag:
+        await update.message.reply_text(_("Please enter a valid tag name."))
+        return TAGS_INPUT
+
+    conv_id = context.user_data.get("conversation_id")
+    if not conv_id:
+        return CHOOSING
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    await add_conversation_tag(pool, user_id, conv_id, tag)
+
+    keyboard = [[InlineKeyboardButton(_("🔙 Back to Conversation"), callback_data=f"CONV_SELECT#{conv_id}")]]
+    await update.message.reply_text(f"✅ Tag '{tag}' added!", reply_markup=InlineKeyboardMarkup(keyboard))
+    return CONVERSATION_HISTORY
+
+
+@restricted
+async def remove_tag_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Remove a tag from the current conversation."""
+    query = update.callback_query
+    await query.answer()
+    tag = query.data.split("#")[1]
+
+    conv_id = context.user_data.get("conversation_id")
+    if not conv_id:
+        return CONVERSATION_HISTORY
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    await remove_conversation_tag(pool, user_id, conv_id, tag)
+
+    # Refresh the tag view
+    return await tag_conversation_handler(update, context)
+
+
+# --- Usage Dashboard Handler ---
+
+@restricted
+async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show usage statistics."""
+    query = update.callback_query
+    await query.answer()
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    stats = await get_user_stats(pool, user_id)
+
+    text = "📊 *Usage Dashboard*\n"
+    text += "━" * 24 + "\n\n"
+    text += f"💬 Conversations: {stats['conversations']}\n"
+    text += f"📋 Active Tasks: {stats['active_tasks']} / {stats['total_tasks']} total\n"
+    text += f"⏰ Reminders: {stats['completed_reminders']} ✅ / {stats['total_reminders']} total\n"
+    text += f"📚 Knowledge Docs: {stats['knowledge_docs']}\n"
+
+    if stats.get('member_since'):
+        text += f"\n📅 Using since: {str(stats['member_since'])[:10]}"
+
+    # Add metrics from monitoring if available
+    from monitoring.metrics import metrics as app_metrics
+    if app_metrics:
+        msg_count = app_metrics.counters.get('messages_processed', 0)
+        if msg_count:
+            text += f"\n\n📈 *Session Stats*\n"
+            text += f"Messages processed: {msg_count}\n"
+            rate_hits = app_metrics.counters.get('rate_limit_hits', 0)
+            if rate_hits:
+                text += f"Rate limit hits: {rate_hits}\n"
+
+    keyboard = [[InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")]]
+
+    try:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+    return CHOOSING
+
+
+# --- Shortcuts Handlers ---
+
+@restricted
+async def open_shortcuts_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show user shortcuts."""
+    query = update.callback_query
+    await query.answer()
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    shortcuts = await get_user_shortcuts(pool, user_id)
+
+    text = "⚡ *Quick Shortcuts*\n\n"
+    text += "Create custom commands that auto-send messages to Gemini.\n\n"
+
+    keyboard = [[InlineKeyboardButton(_("➕ Add Shortcut"), callback_data="Add_Shortcut")]]
+
+    if shortcuts:
+        for s in shortcuts[:10]:
+            text += f"• /{s['command']} → {s['response_text'][:40]}...\n"
+            keyboard.append([InlineKeyboardButton(f"❌ Delete /{s['command']}", callback_data=f"SHORTCUT_DELETE#{s['id']}")])
+    else:
+        text += "No shortcuts yet. Add one to get started!"
+
+    keyboard.append([InlineKeyboardButton(_("🔙 Back to Settings"), callback_data="Settings_Menu")])
+
+    try:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+    return SHORTCUTS_MENU
+
+
+@restricted
+async def start_add_shortcut(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Prompt to add a new shortcut."""
+    query = update.callback_query
+    await query.answer()
+
+    await query.edit_message_text(
+        _("⚡ *Add Shortcut*\n\n"
+          "Enter in format: command | prompt\n\n"
+          "Example: summarize | Summarize the following text in 3 bullet points\n\n"
+          "Then in conversation, type /summarize to auto-send that prompt."),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Shortcuts_Menu")]]),
+        parse_mode=ParseMode.MARKDOWN
+    )
+    return SHORTCUTS_INPUT
+
+
+@restricted
+async def handle_shortcut_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Save a new shortcut."""
+    text = update.message.text
+    back_btn = InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to Shortcuts"), callback_data="Shortcuts_Menu")]])
+
+    try:
+        command, response_text = [s.strip() for s in text.split('|', 1)]
+        command = command.lower().replace('/', '').replace(' ', '_')[:20]
+        if not command or not response_text:
+            raise ValueError("Empty command or response")
+
+        pool = _get_pool(context)
+        user_id = update.effective_user.id
+        await add_shortcut(pool, user_id, command, response_text)
+
+        await update.message.reply_text(f"✅ Shortcut /{command} saved!", reply_markup=back_btn)
+    except (ValueError, IndexError):
+        await update.message.reply_text(_("Invalid format. Use: command | prompt text"), reply_markup=back_btn)
+
+    return SHORTCUTS_MENU
+
+
+@restricted
+async def delete_shortcut_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Delete a shortcut."""
+    query = update.callback_query
+    await query.answer()
+    shortcut_id = int(query.data.split("#")[1])
+
+    pool = _get_pool(context)
+    await delete_shortcut(pool, update.effective_user.id, shortcut_id)
+    await open_shortcuts_menu(update, context)
+    return SHORTCUTS_MENU
+
+
+# --- Pinned Context Handlers ---
+
+@restricted
+async def open_pinned_context_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show pinned context settings."""
+    query = update.callback_query
+    await query.answer()
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    user = await get_user(pool, user_id)
+    current_context = user.get('pinned_context') if user else None
+
+    text = "📌 *Pinned Context*\n\n"
+    text += "This context is included in ALL your conversations automatically.\n"
+    text += "Use it for information Gemini should always know about you.\n\n"
+    if current_context:
+        text += f"Current:\n_{current_context}_\n\n"
+        text += "Send new text to update, or tap Clear to remove."
+    else:
+        text += "No pinned context set. Send text to add one.\n\n"
+        text += "Examples:\n• \"I'm a Python developer working on web apps\"\n• \"Always respond in formal English\"\n• \"My timezone is EST\""
+
+    keyboard = []
+    if current_context:
+        keyboard.append([InlineKeyboardButton(_("🗑 Clear Context"), callback_data="Clear_Pinned_Context")])
+    keyboard.append([InlineKeyboardButton(_("🔙 Back to Settings"), callback_data="Settings_Menu")])
+
+    try:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+    return PINNED_CONTEXT_INPUT
+
+
+@restricted
+async def handle_pinned_context_input(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Save pinned context."""
+    pinned_text = update.message.text.strip()[:500]
+    user_id = update.effective_user.id
+    pool = _get_pool(context)
+    await update_user_settings(pool, user_id, pinned_context=pinned_text)
+
+    # Reset current chat so it picks up new context
+    context.user_data["gemini_chat"] = None
+
+    keyboard = [[InlineKeyboardButton(_("🔙 Back to Settings"), callback_data="Settings_Menu")]]
+    await update.message.reply_text(_("✅ Pinned context updated! It will apply to your next conversation."), reply_markup=InlineKeyboardMarkup(keyboard))
+    return SETTINGS_MENU
+
+
+@restricted
+async def clear_pinned_context_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Clear pinned context."""
+    query = update.callback_query
+    await query.answer()
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    await update_user_settings(pool, user_id, pinned_context="")
+    context.user_data["gemini_chat"] = None
+
+    keyboard = [[InlineKeyboardButton(_("🔙 Back to Settings"), callback_data="Settings_Menu")]]
+    await query.edit_message_text(_("📌 Pinned context cleared."), reply_markup=InlineKeyboardMarkup(keyboard))
+    return SETTINGS_MENU
+
+
+# --- Language Handler ---
+
+@restricted
+async def language_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show language selection menu."""
+    query = update.callback_query
+    await query.answer()
+
+    pool = _get_pool(context)
+    user_id = update.effective_user.id
+    user = await get_user(pool, user_id)
+    current_lang = user.get('language', 'auto') if user else 'auto'
+
+    languages = [
+        ("auto", "🌐 Auto-detect"),
+        ("en", "🇬🇧 English"),
+        ("fa", "🇮🇷 فارسی"),
+        ("es", "🇪🇸 Español"),
+        ("fr", "🇫🇷 Français"),
+        ("de", "🇩🇪 Deutsch"),
+        ("zh", "🇨🇳 中文"),
+        ("ja", "🇯🇵 日本語"),
+        ("ko", "🇰🇷 한국어"),
+        ("ar", "🇸🇦 العربية"),
+        ("ru", "🇷🇺 Русский"),
+        ("pt", "🇧🇷 Português"),
+        ("tr", "🇹🇷 Türkçe"),
+    ]
+
+    keyboard = []
+    for code, name in languages:
+        prefix = "✅ " if code == current_lang else ""
+        keyboard.append([InlineKeyboardButton(f"{prefix}{name}", callback_data=f"SET_LANG_{code}")])
+    keyboard.append([InlineKeyboardButton(_("🔙 Back"), callback_data="Settings_Menu")])
+
+    await query.edit_message_text(_("🌍 Select your preferred language:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    return SETTINGS_MENU
+
+
+@restricted
+async def set_language_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Set user language preference."""
+    query = update.callback_query
+    await query.answer()
+
+    lang = query.data.replace("SET_LANG_", "")
+    user_id = update.effective_user.id
+    pool = _get_pool(context)
+    await update_user_settings(pool, user_id, language=lang)
+
+    # Reset chat to pick up new language
+    context.user_data["gemini_chat"] = None
+
+    await open_settings_menu(update, context)
+    return SETTINGS_MENU
+
+
+# --- Inline Query Handler ---
+
+async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handle inline queries (@bot query in any chat)."""
+    query_text = update.inline_query.query.strip()
+    if not query_text or len(query_text) < 3:
+        return
+
+    user_id = update.effective_user.id
+    pool = _get_pool(context)
+    user = await get_user(pool, user_id)
+
+    api_key = user.get('api_key') if user else None
+    if not api_key:
+        api_key = GEMINI_API_TOKEN
+    if not api_key:
+        results = [InlineQueryResultArticle(
+            id="no_key",
+            title="API Key Required",
+            input_message_content=InputTextMessageContent("Please set up your API key first by sending /start to the bot.")
+        )]
+        await update.inline_query.answer(results, cache_time=0)
+        return
+
+    try:
+        gemini = GeminiChat(api_key)
+        await gemini.async_start_chat()
+        response = await gemini.async_send_message(f"Answer briefly and concisely in 2-3 sentences: {query_text}")
+
+        description = response[:100] if response else "No response"
+        results = [InlineQueryResultArticle(
+            id=str(uuid.uuid4()),
+            title=f"Answer: {query_text[:50]}",
+            description=description,
+            input_message_content=InputTextMessageContent(response)
+        )]
+        await update.inline_query.answer(results, cache_time=300)
+    except Exception as e:
+        logger.error(f"Inline query error: {e}")
+        results = [InlineQueryResultArticle(
+            id="error",
+            title="Error processing query",
+            input_message_content=InputTextMessageContent(f"Sorry, couldn't process: {query_text}")
+        )]
+        await update.inline_query.answer(results, cache_time=0)
+
+
+# --- Weekly Summary Task ---
+
+async def weekly_summary_task():
+    """Send weekly digest to users with recent activity."""
+    if not _application:
+        return
+
+    pool = _application.bot_data.get("db_pool")
+    if not pool:
+        return
+
+    week_ago = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+
+    try:
+        rows = await pool.execute_fetch_all(
+            "SELECT DISTINCT user_id FROM conversations WHERE created_at >= ?",
+            (week_ago,),
+        )
+    except Exception as e:
+        logger.error(f"Failed to get active users for weekly summary: {e}")
+        return
+
+    for row in rows:
+        user_id = row["user_id"]
+        try:
+            stats = await get_user_stats(pool, user_id)
+
+            summary = "📊 *Weekly Summary*\n"
+            summary += "━" * 24 + "\n\n"
+            summary += f"💬 Conversations: {stats['conversations']}\n"
+            summary += f"📋 Active Tasks: {stats['active_tasks']}\n"
+            summary += f"⏰ Reminders completed: {stats['completed_reminders']}/{stats['total_reminders']}\n"
+            summary += f"📚 Knowledge Docs: {stats['knowledge_docs']}\n"
+            summary += f"\nKeep up the great work! 🎯"
+
+            await _application.bot.send_message(chat_id=user_id, text=summary, parse_mode=ParseMode.MARKDOWN)
+        except Exception as e:
+            logger.error(f"Failed to send weekly summary to {user_id}: {e}")
