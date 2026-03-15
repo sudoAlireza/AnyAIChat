@@ -158,31 +158,31 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["system_instruction"] = user.get('system_instruction')
 
     keyboard = [
+        [InlineKeyboardButton(_("💬 New Conversation"), callback_data="New_Conversation")],
         [
-            InlineKeyboardButton(
-                _("Start New Conversation"), callback_data="New_Conversation"
-            ),
-        ],
-        [
-            InlineKeyboardButton(_("Chat History"), callback_data="PAGE#1"),
-            InlineKeyboardButton(_("Tasks"), callback_data="Tasks_Menu"),
+            InlineKeyboardButton(_("📂 History"), callback_data="PAGE#1"),
+            InlineKeyboardButton(_("📋 Tasks"), callback_data="Tasks_Menu"),
         ],
         [
             InlineKeyboardButton(_("⏰ Reminders"), callback_data="Reminders_Menu"),
             InlineKeyboardButton(_("📚 Knowledge"), callback_data="Knowledge_Menu"),
         ],
-        [
-            InlineKeyboardButton(_("⚙️ Settings"), callback_data="Settings_Menu"),
-        ],
+        [InlineKeyboardButton(_("⚙️ Settings"), callback_data="Settings_Menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
 
-    welcome_text = _("Hi. It's Gemini Chat Bot. You can ask me anything and talk to me about what you want")
+    welcome_text = _("✨ *Gemini Chat Bot*\n\nAsk me anything — text, voice, photos, or documents.")
 
     if update.message:
-        await update.message.reply_text(text=welcome_text, reply_markup=reply_markup)
+        try:
+            await update.message.reply_text(text=welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        except BadRequest:
+            await update.message.reply_text(text=strip_markdown(welcome_text), reply_markup=reply_markup)
     elif update.callback_query:
-        await update.callback_query.edit_message_text(text=welcome_text, reply_markup=reply_markup)
+        try:
+            await update.callback_query.edit_message_text(text=welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+        except BadRequest:
+            await update.callback_query.edit_message_text(text=strip_markdown(welcome_text), reply_markup=reply_markup)
 
     return CHOOSING
 
@@ -269,27 +269,24 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def start_menu_new_message(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Send main menu as a new message."""
     keyboard = [
+        [InlineKeyboardButton(_("💬 New Conversation"), callback_data="New_Conversation")],
         [
-            InlineKeyboardButton(
-                _("Start New Conversation"), callback_data="New_Conversation"
-            ),
-        ],
-        [
-            InlineKeyboardButton(_("Chat History"), callback_data="PAGE#1"),
-            InlineKeyboardButton(_("Tasks"), callback_data="Tasks_Menu"),
+            InlineKeyboardButton(_("📂 History"), callback_data="PAGE#1"),
+            InlineKeyboardButton(_("📋 Tasks"), callback_data="Tasks_Menu"),
         ],
         [
             InlineKeyboardButton(_("⏰ Reminders"), callback_data="Reminders_Menu"),
             InlineKeyboardButton(_("📚 Knowledge"), callback_data="Knowledge_Menu"),
         ],
-        [
-            InlineKeyboardButton(_("⚙️ Settings"), callback_data="Settings_Menu"),
-        ],
+        [InlineKeyboardButton(_("⚙️ Settings"), callback_data="Settings_Menu")],
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
-    welcome_text = _("Hi. It's Gemini Chat Bot. You can ask me anything and talk to me about what you want")
+    welcome_text = _("✨ *Gemini Chat Bot*\n\nAsk me anything — text, voice, photos, or documents.")
 
-    await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, reply_markup=reply_markup)
+    try:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=welcome_text, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        await context.bot.send_message(chat_id=update.effective_chat.id, text=strip_markdown(welcome_text), reply_markup=reply_markup)
     return CHOOSING
 
 
@@ -302,9 +299,12 @@ async def start_conversation(update: Update, context: ContextTypes.DEFAULT_TYPE)
     logger.info("Received callback: New_Conversation")
 
     conv_id = context.user_data.get("conversation_id")
-    message_content = _("You asked for a continue conversation. OK, Let's go!") if conv_id else _("You asked for a conversation. OK, Let's start conversation!")
+    if conv_id:
+        message_content = _("💬 Continuing conversation. Send your message.")
+    else:
+        message_content = _("💬 New conversation started. Send your first message.")
 
-    keyboard = [[InlineKeyboardButton(_("Return to menu"), callback_data="Start_Again")]]
+    keyboard = [[InlineKeyboardButton(_("🔙 Menu"), callback_data="Start_Again")]]
     reply_markup = InlineKeyboardMarkup(keyboard)
     await query.edit_message_text(text=message_content, reply_markup=reply_markup)
 
@@ -325,7 +325,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     # Phase 6.1: Send typing indicator
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    msg = await message.reply_text(_("Wait for response processing..."))
+    msg = await message.reply_text("⏳ ...")
 
     file_path = None
     try:
@@ -394,7 +394,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
                 elif command.get('action') == 'generate_image':
                     img_prompt = command.get('parameters', {}).get('prompt')
                     if img_prompt:
-                        await context.bot.delete_message(chat_id=msg.chat_id, message_id=msg.id)
+                        await msg.edit_text(_("🎨 Generating image..."))
                         return await generate_image_handler(update, context, img_prompt)
             except Exception as ve:
                 logger.error(f"Voice to action error: {ve}")
@@ -415,7 +415,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
                 prompt = "Summarize this document"
 
         if not prompt and not image and not file_path:
-             await context.bot.delete_message(chat_id=msg.chat_id, message_id=msg.id)
+             await msg.edit_text(_("No content to process. Send a message, photo, voice, or document."))
              return CONVERSATION
 
         # Phase 6.1: Re-send typing for long operations
@@ -437,29 +437,38 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             response_text += "\n\n⚠️ This conversation is getting long. Consider starting a new conversation for better performance."
 
         keyboard = [
-            [InlineKeyboardButton(_("Save and Back to menu"), callback_data="Start_Again_SAVE")],
-            [InlineKeyboardButton(_("Back to menu without saving"), callback_data="Start_Again")],
+            [
+                InlineKeyboardButton(_("💾 Save & Menu"), callback_data="Start_Again_SAVE"),
+                InlineKeyboardButton(_("🔙 Menu"), callback_data="Start_Again"),
+            ],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
         parts = split_message(response_text)
-        await context.bot.delete_message(chat_id=msg.chat_id, message_id=msg.id)
 
+        # Edit the "processing" message with the first part (keeps it persistent)
         for i, part in enumerate(parts):
             is_last = (i == len(parts) - 1)
             markup = reply_markup if is_last else None
-            try:
-                await update.message.reply_text(text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
-            except BadRequest as e:
-                logger.error(f"Markdown parse error, falling back to plain text: {e}")
-                await update.message.reply_text(text=strip_markdown(part), reply_markup=markup)
+
+            if i == 0:
+                # Edit the placeholder message with the first response part
+                try:
+                    await msg.edit_text(text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+                except BadRequest:
+                    await msg.edit_text(text=strip_markdown(part), reply_markup=markup)
+            else:
+                # Send additional parts as new messages
+                try:
+                    await update.message.reply_text(text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+                except BadRequest:
+                    await update.message.reply_text(text=strip_markdown(part), reply_markup=markup)
 
     except RetryError as e:
-        # Extract the root cause from tenacity's RetryError
         root = e.last_attempt.exception() if e.last_attempt else e
         if isinstance(root, ResourceExhausted):
             logger.warning(f"Gemini quota exceeded for user: {root}")
-            await update.message.reply_text(
+            await msg.edit_text(
                 _("⚠️ Gemini API quota exceeded. Your API key has hit its rate limit.\n\n"
                   "You can:\n"
                   "• Wait a minute and try again\n"
@@ -468,25 +477,25 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             )
         elif isinstance(root, ServiceUnavailable):
             logger.warning(f"Gemini service unavailable: {root}")
-            await update.message.reply_text(
+            await msg.edit_text(
                 _("⚠️ Gemini API is temporarily unavailable. Please try again in a moment.")
             )
         else:
             logger.error(f"Gemini retry exhausted: {e}", exc_info=True)
-            await update.message.reply_text(_("⚠️ Failed to get a response from Gemini after multiple attempts. Please try again later."))
+            await msg.edit_text(_("⚠️ Failed to get a response from Gemini after multiple attempts. Please try again later."))
     except (ResourceExhausted, ServiceUnavailable) as e:
         logger.warning(f"Gemini API error: {e}")
         if isinstance(e, ResourceExhausted):
-            await update.message.reply_text(
+            await msg.edit_text(
                 _("⚠️ Gemini API quota exceeded. Please wait a moment and try again.")
             )
         else:
-            await update.message.reply_text(
+            await msg.edit_text(
                 _("⚠️ Gemini API is temporarily unavailable. Please try again in a moment.")
             )
     except Exception as e:
         logger.error(f"Error in reply_and_new_message: {e}", exc_info=True)
-        await update.message.reply_text(_("❌ An unexpected error occurred. Please try again."))
+        await msg.edit_text(_("❌ An unexpected error occurred. Please try again."))
     finally:
         # Phase 4.2: Always clean up temp files
         if file_path and os.path.exists(file_path):
@@ -993,7 +1002,16 @@ async def update_api_key_handler(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     logger.info(f"Initiating API key update for user {user_id}")
 
-    await query.edit_message_text(_("Please enter your new Gemini API Key:"))
+    await query.edit_message_text(_(
+        "🔑 Update API Key\n\n"
+        "How to get your API key:\n"
+        "1. Go to aistudio.google.com\n"
+        "2. Sign in with your Google account\n"
+        "3. Click \"Get API Key\" in the left sidebar\n"
+        "4. Click \"Create API Key\" and copy it\n\n"
+        "Video tutorial: https://youtu.be/RVGbLSVFtIk?t=22\n\n"
+        "Please paste your new API Key below:"
+    ))
     return API_KEY_INPUT
 
 @restricted
@@ -1262,18 +1280,17 @@ async def generate_image_handler(update: Update, context: ContextTypes.DEFAULT_T
         return CONVERSATION
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    msg = await update.message.reply_text(_("Generating image..."))
+    msg = await update.message.reply_text("🎨 ...")
 
     try:
         api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
         gemini = GeminiChat(api_key)
         response = await gemini.async_generate_image(prompt)
 
-        await context.bot.delete_message(chat_id=msg.chat_id, message_id=msg.id)
-        await update.message.reply_text(_("Image generation requested for: ") + prompt + _("\n(Note: Imagen API integration is experimental and may require specific account permissions)"))
+        await msg.edit_text(_("🎨 Image generation requested for: ") + prompt + _("\n\n(Note: Imagen API integration is experimental and may require specific account permissions)"))
     except Exception as e:
         logger.error(f"Image generation failed: {e}")
-        await update.message.reply_text(_("Failed to generate image. ") + str(e))
+        await msg.edit_text(_("❌ Failed to generate image. ") + str(e))
 
     return CONVERSATION
 

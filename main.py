@@ -4,7 +4,7 @@ import time
 import logging
 import gettext
 import asyncio
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     Application,
     CommandHandler,
@@ -248,6 +248,12 @@ def fallbacks():
 async def post_init(application: Application):
     """Initialize async resources after the application starts."""
     os.makedirs("data", exist_ok=True)
+
+    # Register bot commands with Telegram
+    await application.bot.set_my_commands([
+        BotCommand("start", "Open main menu"),
+        BotCommand("image", "Generate an image (use in conversation)"),
+    ])
 
     # Initialize async database pool
     pool = DatabasePool(DATABASE_PATH)
