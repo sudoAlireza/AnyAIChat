@@ -18,6 +18,8 @@ from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
+from tenacity import RetryError
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
 import PIL.Image
 
 from core import GeminiChat
@@ -129,9 +131,10 @@ def restricted(func):
 @restricted
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the conversation with /start command and ask the user for input."""
-    logger.info("Received command: /start")
-
-    user_id = update.effective_user.id
+    user = update.effective_user
+    user_id = user.id
+    username = user.username or user.first_name or "unknown"
+    logger.info(f"/start from {username} (id={user_id})")
     pool = _get_pool(context)
     user = await get_user(pool, user_id)
 
@@ -451,9 +454,39 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
                 logger.error(f"Markdown parse error, falling back to plain text: {e}")
                 await update.message.reply_text(text=strip_markdown(part), reply_markup=markup)
 
+    except RetryError as e:
+        # Extract the root cause from tenacity's RetryError
+        root = e.last_attempt.exception() if e.last_attempt else e
+        if isinstance(root, ResourceExhausted):
+            logger.warning(f"Gemini quota exceeded for user: {root}")
+            await update.message.reply_text(
+                _("⚠️ Gemini API quota exceeded. Your API key has hit its rate limit.\n\n"
+                  "You can:\n"
+                  "• Wait a minute and try again\n"
+                  "• Check your quota at ai.google.dev\n"
+                  "• Upgrade your API plan for higher limits")
+            )
+        elif isinstance(root, ServiceUnavailable):
+            logger.warning(f"Gemini service unavailable: {root}")
+            await update.message.reply_text(
+                _("⚠️ Gemini API is temporarily unavailable. Please try again in a moment.")
+            )
+        else:
+            logger.error(f"Gemini retry exhausted: {e}", exc_info=True)
+            await update.message.reply_text(_("⚠️ Failed to get a response from Gemini after multiple attempts. Please try again later."))
+    except (ResourceExhausted, ServiceUnavailable) as e:
+        logger.warning(f"Gemini API error: {e}")
+        if isinstance(e, ResourceExhausted):
+            await update.message.reply_text(
+                _("⚠️ Gemini API quota exceeded. Please wait a moment and try again.")
+            )
+        else:
+            await update.message.reply_text(
+                _("⚠️ Gemini API is temporarily unavailable. Please try again in a moment.")
+            )
     except Exception as e:
         logger.error(f"Error in reply_and_new_message: {e}", exc_info=True)
-        await update.message.reply_text(_("An error occurred."))
+        await update.message.reply_text(_("❌ An unexpected error occurred. Please try again."))
     finally:
         # Phase 4.2: Always clean up temp files
         if file_path and os.path.exists(file_path):
