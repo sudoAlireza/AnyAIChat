@@ -131,7 +131,16 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user(pool, user_id)
 
     if not user or not user.get('api_key'):
-        await update.message.reply_text(_("Welcome! To use this bot, you need to provide your own Gemini API Key. You can get one from Google AI Studio.\n\nPlease enter your API Key now:"))
+        await update.message.reply_text(_(
+            "Welcome! To use this bot, you need to provide your own Gemini API Key.\n\n"
+            "How to get your API key:\n"
+            "1. Go to aistudio.google.com\n"
+            "2. Sign in with your Google account\n"
+            "3. Click \"Get API Key\" in the left sidebar\n"
+            "4. Click \"Create API Key\" and copy it\n\n"
+            "Video tutorial: https://youtu.be/RVGbLSVFtIk?t=22\n\n"
+            "Please paste your API Key below:"
+        ))
         return API_KEY_INPUT
 
     # Sync context with DB settings
