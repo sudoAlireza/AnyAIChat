@@ -149,6 +149,81 @@ async def m007_recurring_reminders(conn):
         pass
 
 
+@migration
+async def m008_bookmarks(conn):
+    """v8: Create bookmarks table."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            conv_id TEXT,
+            message_text TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_bookmarks_user ON bookmarks(user_id);")
+
+
+@migration
+async def m009_prompt_library(conn):
+    """v9: Create prompt_library table."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS prompt_library (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            category TEXT DEFAULT 'general',
+            title TEXT NOT NULL,
+            prompt_text TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_prompts_user ON prompt_library(user_id);")
+
+
+@migration
+async def m010_feedback(conn):
+    """v10: Create feedback table."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS feedback (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            message_preview TEXT,
+            rating INTEGER NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+
+@migration
+async def m011_url_monitors(conn):
+    """v11: Create url_monitors table."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS url_monitors (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            check_interval_hours INTEGER DEFAULT 1,
+            last_hash TEXT,
+            status TEXT DEFAULT 'active',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_monitors_user ON url_monitors(user_id);")
+
+
+@migration
+async def m012_briefing_and_resume(conn):
+    """v12: Add briefing_time to users and resume_index to conversations."""
+    try:
+        await conn.execute("ALTER TABLE users ADD COLUMN briefing_time TEXT")
+    except Exception:
+        pass
+    try:
+        await conn.execute("ALTER TABLE conversations ADD COLUMN resume_index INTEGER")
+    except Exception:
+        pass
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -375,7 +450,7 @@ async def mark_task_completed(pool: DatabasePool, task_id: int):
 async def get_user(pool: DatabasePool, user_id):
     """Retrieve user settings, decrypting the API key."""
     row = await pool.execute_fetch_one(
-        "SELECT user_id, api_key, model_name, grounding, system_instruction, language, pinned_context FROM users WHERE user_id=?",
+        "SELECT user_id, api_key, model_name, grounding, system_instruction, language, pinned_context, briefing_time FROM users WHERE user_id=?",
         (user_id,),
     )
     if row:
@@ -390,6 +465,7 @@ async def get_user(pool: DatabasePool, user_id):
             "system_instruction": row["system_instruction"],
             "language": row.get("language", "auto"),
             "pinned_context": row.get("pinned_context"),
+            "briefing_time": row.get("briefing_time"),
         }
     return None
 
@@ -404,7 +480,7 @@ async def update_user_api_key(pool: DatabasePool, user_id, api_key):
     await pool.execute(sql, (user_id, encrypted_key))
 
 
-async def update_user_settings(pool: DatabasePool, user_id, model_name=None, grounding=None, system_instruction=None, language=None, pinned_context=None):
+async def update_user_settings(pool: DatabasePool, user_id, model_name=None, grounding=None, system_instruction=None, language=None, pinned_context=None, briefing_time=None):
     """Update user settings."""
     updates = []
     params = []
@@ -424,6 +500,9 @@ async def update_user_settings(pool: DatabasePool, user_id, model_name=None, gro
     if pinned_context is not None:
         updates.append("pinned_context=?")
         params.append(pinned_context)
+    if briefing_time is not None:
+        updates.append("briefing_time=?")
+        params.append(briefing_time)
 
     if not updates:
         return
@@ -632,3 +711,115 @@ async def get_user_stats(pool: DatabasePool, user_id):
     stats["member_since"] = r["first"] if r and r["first"] else None
 
     return stats
+
+
+# --- Bookmark Functions ---
+
+async def add_bookmark(pool: DatabasePool, user_id, message_text, conv_id=None):
+    """Add a bookmark."""
+    sql = "INSERT INTO bookmarks(user_id, conv_id, message_text) VALUES(?,?,?)"
+    return await pool.execute_insert(sql, (user_id, conv_id, message_text))
+
+
+async def get_user_bookmarks(pool: DatabasePool, user_id):
+    """Get all bookmarks for a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, conv_id, message_text, created_at FROM bookmarks WHERE user_id=? ORDER BY id DESC",
+        (user_id,),
+    )
+    return [{"id": r["id"], "conv_id": r["conv_id"], "message_text": r["message_text"], "created_at": r["created_at"]} for r in rows]
+
+
+async def delete_bookmark(pool: DatabasePool, user_id, bookmark_id):
+    """Delete a bookmark."""
+    count = await pool.execute_delete(
+        "DELETE FROM bookmarks WHERE user_id=? AND id=?", (user_id, bookmark_id)
+    )
+    return count > 0
+
+
+# --- Prompt Library Functions ---
+
+async def add_prompt(pool: DatabasePool, user_id, title, prompt_text, category='general'):
+    """Add a prompt to the library."""
+    sql = "INSERT INTO prompt_library(user_id, category, title, prompt_text) VALUES(?,?,?,?)"
+    return await pool.execute_insert(sql, (user_id, category, title, prompt_text))
+
+
+async def get_user_prompts(pool: DatabasePool, user_id):
+    """Get all saved prompts for a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, category, title, prompt_text FROM prompt_library WHERE user_id=? ORDER BY category, title",
+        (user_id,),
+    )
+    return [{"id": r["id"], "category": r["category"], "title": r["title"], "prompt_text": r["prompt_text"]} for r in rows]
+
+
+async def delete_prompt(pool: DatabasePool, user_id, prompt_id):
+    """Delete a prompt."""
+    count = await pool.execute_delete(
+        "DELETE FROM prompt_library WHERE user_id=? AND id=?", (user_id, prompt_id)
+    )
+    return count > 0
+
+
+# --- Feedback Functions ---
+
+async def add_feedback(pool: DatabasePool, user_id, message_preview, rating):
+    """Add response feedback."""
+    sql = "INSERT INTO feedback(user_id, message_preview, rating) VALUES(?,?,?)"
+    return await pool.execute_insert(sql, (user_id, message_preview, rating))
+
+
+# --- URL Monitor Functions ---
+
+async def add_url_monitor(pool: DatabasePool, user_id, url, check_interval_hours=1):
+    """Add a URL monitor."""
+    sql = "INSERT INTO url_monitors(user_id, url, check_interval_hours) VALUES(?,?,?)"
+    return await pool.execute_insert(sql, (user_id, url, check_interval_hours))
+
+
+async def get_user_monitors(pool: DatabasePool, user_id):
+    """Get all URL monitors for a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, url, check_interval_hours, status, created_at FROM url_monitors WHERE user_id=? ORDER BY id DESC",
+        (user_id,),
+    )
+    return [{"id": r["id"], "url": r["url"], "check_interval_hours": r["check_interval_hours"], "status": r["status"], "created_at": r["created_at"]} for r in rows]
+
+
+async def delete_url_monitor(pool: DatabasePool, user_id, monitor_id):
+    """Delete a URL monitor."""
+    count = await pool.execute_delete(
+        "DELETE FROM url_monitors WHERE user_id=? AND id=?", (user_id, monitor_id)
+    )
+    return count > 0
+
+
+async def get_active_monitors(pool: DatabasePool):
+    """Get all active URL monitors."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, user_id, url, check_interval_hours, last_hash FROM url_monitors WHERE status='active'",
+    )
+    return [{"id": r["id"], "user_id": r["user_id"], "url": r["url"], "check_interval_hours": r["check_interval_hours"], "last_hash": r["last_hash"]} for r in rows]
+
+
+async def update_monitor_hash(pool: DatabasePool, monitor_id, hash_value):
+    """Update the last hash for a URL monitor."""
+    await pool.execute("UPDATE url_monitors SET last_hash=? WHERE id=?", (hash_value, monitor_id))
+
+
+# --- Conversation Resume Functions ---
+
+async def update_conversation_resume(pool: DatabasePool, user_id, conv_id, resume_index):
+    """Set resume point for a conversation."""
+    await pool.execute(
+        "UPDATE conversations SET resume_index=? WHERE user_id=? AND conv_id=?",
+        (resume_index, user_id, conv_id),
+    )
+
+
+async def create_conversation_branch(pool: DatabasePool, user_id, source_conv_id, new_conv_id, title, history):
+    """Create a branched copy of a conversation."""
+    sql = "INSERT INTO conversations(conv_id, user_id, title, history) VALUES(?,?,?,?)"
+    return await pool.execute_insert(sql, (new_conv_id, user_id, f"[Branch] {title}", history))

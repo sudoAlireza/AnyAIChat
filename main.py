@@ -46,6 +46,7 @@ from bot.conversation_handlers import (
     open_settings_menu,
     open_models_menu,
     set_model_handler,
+    show_all_models_handler,
     open_storage_menu,
     toggle_web_search,
     handle_api_key,
@@ -62,7 +63,7 @@ from bot.conversation_handlers import (
     delete_knowledge_handler,
     generate_image_handler,
     check_reminders_task,
-    # New feature handlers
+    # Feature handlers (batch 1)
     search_menu_handler,
     handle_search_input,
     browse_tags_handler,
@@ -84,6 +85,34 @@ from bot.conversation_handlers import (
     set_language_handler,
     inline_query_handler,
     weekly_summary_task,
+    # Feature handlers (batch 2)
+    templates_menu_handler,
+    select_template_handler,
+    translation_mode_handler,
+    start_translation_handler,
+    bookmarks_menu_handler,
+    delete_bookmark_handler,
+    bookmark_message_handler,
+    prompt_library_handler,
+    start_add_prompt_handler,
+    handle_prompt_add,
+    use_prompt_handler,
+    delete_prompt_handler,
+    suggest_followup_handler,
+    voice_output_handler,
+    feedback_up_handler,
+    feedback_down_handler,
+    branch_conversation_handler,
+    set_resume_point_handler,
+    briefing_menu_handler,
+    handle_briefing_time_input,
+    disable_briefing_handler,
+    url_monitor_menu_handler,
+    start_add_url_monitor,
+    handle_url_monitor_input,
+    delete_url_monitor_handler,
+    check_url_monitors_task,
+    daily_briefing_task,
 )
 from dotenv import load_dotenv
 
@@ -116,7 +145,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT = range(23)
+CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU, BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU, URL_MONITOR_MENU, URL_MONITOR_INPUT = range(30)
 
 
 def _check_access_config():
@@ -179,12 +208,20 @@ def states():
             CallbackQueryHandler(open_reminders_menu, pattern="^Reminders_Menu$"),
             CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
             CallbackQueryHandler(search_menu_handler, pattern="^Search_Menu$"),
+            CallbackQueryHandler(bookmarks_menu_handler, pattern="^Bookmarks_Menu$"),
+            CallbackQueryHandler(prompt_library_handler, pattern="^Prompt_Library$"),
             CallbackQueryHandler(usage_dashboard_handler, pattern="^Usage_Dashboard$"),
+            CallbackQueryHandler(templates_menu_handler, pattern="^Templates_Menu$"),
             CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
             CallbackQueryHandler(done, pattern="^End_Conversation$"),
         ],
         CONVERSATION: [
             CommandHandler("image", generate_image_handler),
+            CallbackQueryHandler(suggest_followup_handler, pattern="^Suggest_Followup$"),
+            CallbackQueryHandler(voice_output_handler, pattern="^Voice_Output$"),
+            CallbackQueryHandler(bookmark_message_handler, pattern="^Bookmark_Msg$"),
+            CallbackQueryHandler(feedback_up_handler, pattern="^Feedback_Up$"),
+            CallbackQueryHandler(feedback_down_handler, pattern="^Feedback_Down$"),
             MessageHandler((filters.TEXT | filters.VOICE | filters.PHOTO | filters.Document.ALL) & ~filters.COMMAND, reply_and_new_message),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
         ],
@@ -198,6 +235,8 @@ def states():
             CallbackQueryHandler(export_conversation_handler, pattern="^Export_Conversation$"),
             CallbackQueryHandler(share_conversation_handler, pattern="^Share_Conversation$"),
             CallbackQueryHandler(tag_conversation_handler, pattern="^Tag_Conversation$"),
+            CallbackQueryHandler(branch_conversation_handler, pattern="^Branch_Conversation$"),
+            CallbackQueryHandler(set_resume_point_handler, pattern="^Set_Resume_Point$"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
         ],
         TASKS_MENU: [
@@ -231,6 +270,8 @@ def states():
             CallbackQueryHandler(open_storage_menu, pattern="^Storage_Menu$"),
             CallbackQueryHandler(toggle_web_search, pattern="^TOGGLE_WEB_SEARCH$"),
             CallbackQueryHandler(language_menu_handler, pattern="^Language_Menu$"),
+            CallbackQueryHandler(briefing_menu_handler, pattern="^Briefing_Menu$"),
+            CallbackQueryHandler(url_monitor_menu_handler, pattern="^URL_Monitor_Menu$"),
             CallbackQueryHandler(update_api_key_handler, pattern="^UPDATE_API_KEY$"),
             CallbackQueryHandler(set_language_handler, pattern="^SET_LANG_"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
@@ -261,6 +302,7 @@ def states():
         ],
         MODELS_MENU: [
             CallbackQueryHandler(set_model_handler, pattern="^SET_MODEL_"),
+            CallbackQueryHandler(show_all_models_handler, pattern="^Show_All_Models$"),
             CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
         ],
@@ -294,6 +336,44 @@ def states():
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_pinned_context_input),
             CallbackQueryHandler(clear_pinned_context_handler, pattern="^Clear_Pinned_Context$"),
             CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
+        ],
+        TEMPLATES_MENU: [
+            CallbackQueryHandler(select_template_handler, pattern="^TEMPLATE#"),
+            CallbackQueryHandler(translation_mode_handler, pattern="^Translation_Mode$"),
+            CallbackQueryHandler(start_translation_handler, pattern="^TRANSLATE_TO#"),
+            CallbackQueryHandler(templates_menu_handler, pattern="^Templates_Menu$"),
+            CallbackQueryHandler(start_over, pattern="^Start_Again"),
+        ],
+        BOOKMARKS_MENU: [
+            CallbackQueryHandler(delete_bookmark_handler, pattern="^BOOKMARK_DELETE#"),
+            CallbackQueryHandler(bookmarks_menu_handler, pattern="^Bookmarks_Menu$"),
+            CallbackQueryHandler(start_over, pattern="^Start_Again"),
+        ],
+        PROMPT_LIBRARY: [
+            CallbackQueryHandler(start_add_prompt_handler, pattern="^Add_Prompt$"),
+            CallbackQueryHandler(use_prompt_handler, pattern="^USE_PROMPT#"),
+            CallbackQueryHandler(delete_prompt_handler, pattern="^PROMPT_DELETE#"),
+            CallbackQueryHandler(prompt_library_handler, pattern="^Prompt_Library$"),
+            CallbackQueryHandler(start_over, pattern="^Start_Again"),
+        ],
+        PROMPT_ADD: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prompt_add),
+            CallbackQueryHandler(prompt_library_handler, pattern="^Prompt_Library$"),
+        ],
+        BRIEFING_MENU: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_briefing_time_input),
+            CallbackQueryHandler(disable_briefing_handler, pattern="^Disable_Briefing$"),
+            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
+        ],
+        URL_MONITOR_MENU: [
+            CallbackQueryHandler(start_add_url_monitor, pattern="^Add_URL_Monitor$"),
+            CallbackQueryHandler(delete_url_monitor_handler, pattern="^MONITOR_DELETE#"),
+            CallbackQueryHandler(url_monitor_menu_handler, pattern="^URL_Monitor_Menu$"),
+            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
+        ],
+        URL_MONITOR_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_url_monitor_input),
+            CallbackQueryHandler(url_monitor_menu_handler, pattern="^URL_Monitor_Menu$"),
         ],
     }
 
@@ -402,6 +482,8 @@ def main() -> None:
     scheduler.add_job(_cleanup_temp_files_async, 'interval', hours=1)
     scheduler.add_job(log_metrics_task, 'interval', minutes=5)
     scheduler.add_job(weekly_summary_task, 'cron', day_of_week='sun', hour=10, minute=0)
+    scheduler.add_job(check_url_monitors_task, 'interval', minutes=30)
+    scheduler.add_job(daily_briefing_task, 'cron', minute='*')  # Check every minute for matching briefing times
 
     scheduler.start()
     application.run_polling(allowed_updates=Update.ALL_TYPES)
