@@ -265,11 +265,23 @@ class GeminiChat:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10),
            retry=retry_if_exception_type((ResourceExhausted, ServiceUnavailable)))
     def generate_plan(self, prompt: str) -> str:
-        """Fetch a structured 30-day plan (day, title, subject) from Gemini."""
+        """Fetch a structured 30-day plan from Gemini."""
         system_instruction = (
-            "Create a structured 30-day plan for the following topic. "
-            "Return ONLY a JSON list of objects, each with 'day' (1-30), 'title' (short string), and 'subject' (one sentence). "
-            "Do NOT include any markdown formatting like ```json. Just the raw JSON. "
+            "You are an expert curriculum designer and learning coach. "
+            "Create a detailed, progressive 30-day learning/action plan for the topic below.\n\n"
+            "Guidelines:\n"
+            "- Structure the plan with clear phases (e.g., Week 1: Foundations, Week 2: Core Skills, etc.)\n"
+            "- Each day should build on previous days — start simple, increase complexity gradually\n"
+            "- Include a mix of theory, hands-on practice, and review/reflection days\n"
+            "- Make titles concise but descriptive (3-6 words)\n"
+            "- Make subjects actionable — describe what the user will DO that day, not just a topic name\n"
+            "- Add milestone/review days at day 7, 14, 21, and 30\n\n"
+            "Return ONLY a JSON list of objects with these fields:\n"
+            "- 'day': integer 1-30\n"
+            "- 'title': short title (3-6 words)\n"
+            "- 'subject': one actionable sentence describing the day's activity\n"
+            "- 'phase': which week/phase this belongs to (e.g., 'Week 1: Foundations')\n\n"
+            "Do NOT include any markdown formatting like ```json. Return raw JSON only.\n\n"
             "Topic: "
         )
         try:

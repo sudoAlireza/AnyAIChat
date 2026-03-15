@@ -609,20 +609,41 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         if not isinstance(plan, list):
              raise ValueError("Plan is not a list")
 
-        text = _("Proposed Plan:\n\n")
-        for day in plan:
-            text += f"Day {day.get('day')}: {day.get('title')} - {day.get('subject')}\n"
+        text = f"📋 *30-Day Plan: {prompt[:40]}*\n"
+        text += f"⏰ {run_time} | 🔄 {interval}\n"
+        text += "━" * 25 + "\n\n"
 
-        text += _("\nDo you approve this plan?")
+        current_phase = None
+        for day in plan:
+            phase = day.get('phase', '')
+            if phase and phase != current_phase:
+                current_phase = phase
+                text += f"\n📌 *{phase}*\n\n"
+
+            day_num = day.get('day', '?')
+            title = day.get('title', '')
+            subject = day.get('subject', '')
+
+            if day_num in (7, 14, 21, 30):
+                text += f"  🏁 Day {day_num}: *{title}*\n"
+            else:
+                text += f"  📅 Day {day_num}: *{title}*\n"
+            text += f"        {subject}\n"
+
+        text += "\n" + "━" * 25
+        text += _("\n\nDo you approve this plan?")
 
         if len(text) > MAX_MESSAGE_LENGTH:
-            text = text[:3900] + "...\n\n(Plan truncated for display, but full plan will be saved)" + _("\nDo you approve this plan?")
+            text = text[:3900] + "\n...\n\n_(Plan truncated for display, full plan will be saved)_" + _("\n\nDo you approve this plan?")
         keyboard = [
             [InlineKeyboardButton(_("✅ Approve"), callback_data="Plan_Approve")],
             [InlineKeyboardButton(_("❌ Reject"), callback_data="Plan_Reject")],
             [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Time")],
         ]
-        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+        try:
+            await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        except BadRequest:
+            await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
         return TASKS_CONFIRM_PLAN
     except (json.JSONDecodeError, ValueError) as e:
         logger.error(f"Failed to parse plan: {e}. Plan: {plan_json_str}")
@@ -730,7 +751,17 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
 
                 day_item = next((item for item in plan if item['day'] == days_passed), None)
                 if day_item:
-                    target_prompt = f"Today's topic: {day_item['title']}. Subject: {day_item['subject']}. Context: {prompt}. Please provide the content for today based on this."
+                    phase = day_item.get('phase', '')
+                    phase_info = f" Phase: {phase}." if phase else ""
+                    target_prompt = (
+                        f"You are delivering Day {days_passed}/30 of a structured learning plan.{phase_info}\n"
+                        f"Today's title: {day_item['title']}\n"
+                        f"Today's goal: {day_item['subject']}\n"
+                        f"Overall topic: {prompt}\n\n"
+                        f"Provide today's content in a clear, engaging format. "
+                        f"Start with a brief recap connection to yesterday, then deliver today's material. "
+                        f"End with a quick action item or reflection question."
+                    )
                 else:
                     target_prompt = f"Plan finished or day {days_passed} not found. Original prompt: {prompt}"
             except Exception as e:
@@ -748,7 +779,8 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
         gemini = GeminiChat(api_key, model_name=model_name, tools=tools)
         await gemini.async_start_chat()
         response = await gemini.async_send_message(target_prompt)
-        parts = split_message(f"Scheduled Task Result:\nPrompt: {prompt}\n\n{response}")
+        header = f"📬 *Daily Task: {prompt[:50]}*\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        parts = split_message(header + response)
         for part in parts:
             try:
                 await _application.bot.send_message(chat_id=user_id, text=part, parse_mode=ParseMode.MARKDOWN)
