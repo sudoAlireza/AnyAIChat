@@ -169,6 +169,19 @@ def restricted(func):
     return wrapped
 
 
+async def _clear_last_ai_buttons(context: ContextTypes.DEFAULT_TYPE):
+    """Remove inline buttons from the previous AI response message."""
+    last = context.user_data.pop("last_ai_message_id", None)
+    chat = context.user_data.pop("last_ai_chat_id", None)
+    if last and chat:
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=chat, message_id=last, reply_markup=None
+            )
+        except BadRequest:
+            pass
+
+
 @restricted
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     """Start the conversation with /start command and ask the user for input."""
@@ -282,6 +295,16 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = update.effective_user.id
     pool = _get_pool(context)
 
+    # Detect if button was pressed on an AI response message (_CONV suffix)
+    from_conversation = query and "_CONV" in query.data
+
+    # Remove buttons from the clicked AI response message
+    if from_conversation:
+        try:
+            await query.edit_message_reply_markup(reply_markup=None)
+        except BadRequest:
+            pass
+
     # Save conversation if requested
     gemini_chat = context.user_data.get("gemini_chat")
     if gemini_chat and query and "_SAVE" in query.data:
@@ -314,14 +337,10 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         except Exception as tag_err:
             logger.warning(f"Auto-tagging failed: {tag_err}")
 
-        await query.message.reply_text(_("Conversation saved successfully!"))
-
-        # Clean up context
-        context.user_data["gemini_chat"] = None
-        context.user_data["gemini_image_chat"] = None
-        context.user_data["conversation_id"] = None
-
-        return await start_menu_new_message(update, context)
+        await context.bot.send_message(
+            chat_id=update.effective_chat.id,
+            text=_("Conversation saved successfully!")
+        )
 
     # Clean up context
     context.user_data["gemini_chat"] = None
@@ -336,10 +355,9 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data["web_search"] = bool(user['grounding'])
         context.user_data["system_instruction"] = user.get('system_instruction')
 
-    # If coming from a conversation (AI response message), send menu as new message
-    # to preserve the AI response. Otherwise, edit the current menu message.
-    if context.user_data.get("last_ai_response"):
-        context.user_data["last_ai_response"] = None
+    # AI response buttons (_CONV): always send menu as new message to preserve the response.
+    # Menu buttons: edit the current menu message as normal navigation.
+    if from_conversation:
         return await start_menu_new_message(update, context)
 
     return await start(update, context)
@@ -609,8 +627,8 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
 
         keyboard = [
             [
-                InlineKeyboardButton(_("💾 Save & Menu"), callback_data="Start_Again_SAVE"),
-                InlineKeyboardButton(_("🔙 Menu"), callback_data="Start_Again"),
+                InlineKeyboardButton(_("💾 Save & Menu"), callback_data="Start_Again_SAVE_CONV"),
+                InlineKeyboardButton(_("🔙 Menu"), callback_data="Start_Again_CONV"),
             ],
             [
                 InlineKeyboardButton("💡", callback_data="Suggest_Followup"),
@@ -624,7 +642,11 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
 
         parts = split_message(response_text)
 
+        # Clear buttons from previous AI response before sending new one
+        await _clear_last_ai_buttons(context)
+
         # Edit the "processing" message with the first part (keeps it persistent)
+        last_btn_msg = msg  # track which message gets the buttons
         for i, part in enumerate(parts):
             is_last = (i == len(parts) - 1)
             markup = reply_markup if is_last else None
@@ -638,9 +660,15 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             else:
                 # Send additional parts as new messages
                 try:
-                    await update.message.reply_text(text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+                    sent = await update.message.reply_text(text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
                 except BadRequest:
-                    await update.message.reply_text(text=strip_markdown(part), reply_markup=markup)
+                    sent = await update.message.reply_text(text=strip_markdown(part), reply_markup=markup)
+                if is_last:
+                    last_btn_msg = sent
+
+        # Store the message with buttons so we can clear them later
+        context.user_data["last_ai_message_id"] = last_btn_msg.message_id
+        context.user_data["last_ai_chat_id"] = last_btn_msg.chat_id
 
     except RetryError as e:
         root = e.last_attempt.exception() if e.last_attempt else e
@@ -2479,6 +2507,12 @@ async def bookmark_message_handler(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer("⭐ Bookmarked!", show_alert=False)
 
+    # Remove buttons from this AI response
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
+
     message_text = query.message.text or ""
     if not message_text:
         return CONVERSATION
@@ -2616,6 +2650,12 @@ async def suggest_followup_handler(update: Update, context: ContextTypes.DEFAULT
     query = update.callback_query
     await query.answer()
 
+    # Remove buttons from this AI response
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
+
     gemini_chat = context.user_data.get("gemini_chat")
     if not gemini_chat:
         return CONVERSATION
@@ -2630,8 +2670,8 @@ async def suggest_followup_handler(update: Update, context: ContextTypes.DEFAULT
 
         keyboard = [
             [
-                InlineKeyboardButton(_("💾 Save & Menu"), callback_data="Start_Again_SAVE"),
-                InlineKeyboardButton(_("🔙 Menu"), callback_data="Start_Again"),
+                InlineKeyboardButton(_("💾 Save & Menu"), callback_data="Start_Again_SAVE_CONV"),
+                InlineKeyboardButton(_("🔙 Menu"), callback_data="Start_Again_CONV"),
             ],
         ]
 
@@ -2659,6 +2699,12 @@ async def voice_output_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     """Convert last AI response to voice."""
     query = update.callback_query
     await query.answer("🔊 Generating audio...")
+
+    # Remove buttons from this AI response
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
 
     last_response = context.user_data.get("last_ai_response", "")
     if not last_response:
@@ -2713,6 +2759,12 @@ async def feedback_up_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     query = update.callback_query
     await query.answer("👍 Thanks for the feedback!", show_alert=False)
 
+    # Remove buttons from this AI response
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
+
     pool = _get_pool(context)
     message_preview = (query.message.text or "")[:100]
     await add_feedback(pool, update.effective_user.id, message_preview, 1)
@@ -2724,6 +2776,12 @@ async def feedback_down_handler(update: Update, context: ContextTypes.DEFAULT_TY
     """Record negative feedback."""
     query = update.callback_query
     await query.answer("👎 Noted, we'll try to improve!", show_alert=False)
+
+    # Remove buttons from this AI response
+    try:
+        await query.edit_message_reply_markup(reply_markup=None)
+    except BadRequest:
+        pass
 
     pool = _get_pool(context)
     message_preview = (query.message.text or "")[:100]
