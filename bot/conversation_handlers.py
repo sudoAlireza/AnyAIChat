@@ -1794,11 +1794,13 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
     # Add metrics from monitoring if available
     from monitoring.metrics import metrics as app_metrics
     if app_metrics:
-        msg_count = app_metrics.counters.get('messages_processed', 0)
+        summary = app_metrics.get_summary()
+        counters = summary.get('counters', {})
+        msg_count = counters.get('messages_processed', 0)
         if msg_count:
             text += f"\n\n📈 *Session Stats*\n"
             text += f"Messages processed: {msg_count}\n"
-            rate_hits = app_metrics.counters.get('rate_limit_hits', 0)
+            rate_hits = counters.get('rate_limit_hits', 0)
             if rate_hits:
                 text += f"Rate limit hits: {rate_hits}\n"
 
