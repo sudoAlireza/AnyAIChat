@@ -4,11 +4,36 @@ from bs4 import BeautifulSoup
 
 
 def conversations_page_content(convs: dict) -> str:
-    page_content = ""
+    page_content = "💬 *Your Conversations*\n"
+    page_content += "━" * 24 + "\n\n"
+
     for index, item in enumerate(convs):
-        # Escape potential markdown in title
         title = item.get('title', 'Untitled').replace('*', '\\*').replace('_', '\\_')
-        page_content += f"{index+1}.\n*Title*: {title}\n*ConversationID*: /{item.get('conversation_id')}\n\n"
+        msg_count = item.get('message_count', 0)
+        created = item.get('created_at', '')
+
+        # Format date nicely
+        date_str = ""
+        if created:
+            try:
+                from datetime import datetime
+                dt = datetime.strptime(created[:16], "%Y-%m-%d %H:%M")
+                date_str = dt.strftime("%b %d, %H:%M")
+            except (ValueError, TypeError):
+                date_str = str(created)[:10]
+
+        # Preview of last message
+        preview = item.get('last_message', '')
+        if preview:
+            preview = preview.replace('*', '').replace('_', '').replace('`', '')
+            if len(preview) > 60:
+                preview = preview[:57] + "..."
+            preview = f"\n     _{preview}_"
+        else:
+            preview = ""
+
+        page_content += f"{index + 1}. *{title}*\n"
+        page_content += f"     📊 {msg_count} msgs  •  📅 {date_str}{preview}\n\n"
 
     return page_content
 

@@ -6,86 +6,137 @@ from security.crypto import encrypt_api_key, decrypt_api_key
 
 logger = logging.getLogger(__name__)
 
+# --- Schema version & migrations ---
+# To add a new migration: append a function to MIGRATIONS list.
+# Each migration receives an aiosqlite connection. They run in order,
+# and the current version is tracked in the `schema_version` table.
+
+MIGRATIONS = []
+
+
+def migration(func):
+    """Decorator to register a migration function."""
+    MIGRATIONS.append(func)
+    return func
+
+
+@migration
+async def m001_initial_tables(conn):
+    """v1: Create initial tables."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS users (
+            user_id INTEGER PRIMARY KEY,
+            api_key TEXT,
+            model_name TEXT,
+            grounding INTEGER DEFAULT 0,
+            system_instruction TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_base (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            file_name TEXT NOT NULL,
+            file_id TEXT NOT NULL,
+            content_preview TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS reminders (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            reminder_text TEXT NOT NULL,
+            remind_at TIMESTAMP NOT NULL,
+            status TEXT DEFAULT 'pending',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS conversations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+            conv_id TEXT NOT NULL UNIQUE,
+            user_id INTEGER NOT NULL,
+            title TEXT NOT NULL,
+            history TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            prompt TEXT NOT NULL,
+            run_time TEXT NOT NULL,
+            interval TEXT NOT NULL,
+            plan_json TEXT,
+            start_date TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+
+
+@migration
+async def m002_tasks_status_column(conn):
+    """v2: Add status column to tasks table."""
+    try:
+        await conn.execute("ALTER TABLE tasks ADD COLUMN status TEXT DEFAULT 'active'")
+    except Exception:
+        pass  # Column already exists
+
+
+@migration
+async def m003_add_indexes(conn):
+    """v3: Add indexes on lookup columns."""
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_base_user_id ON knowledge_base(user_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_status_remind_at ON reminders(status, remind_at);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id);")
+
+
+async def _get_schema_version(conn) -> int:
+    """Get current schema version, creating the tracking table if needed."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS schema_version (
+            version INTEGER NOT NULL
+        );
+    """)
+    cursor = await conn.execute("SELECT version FROM schema_version LIMIT 1")
+    row = await cursor.fetchone()
+    return row[0] if row else 0
+
+
+async def _set_schema_version(conn, version: int):
+    """Update the stored schema version."""
+    await conn.execute("DELETE FROM schema_version")
+    await conn.execute("INSERT INTO schema_version (version) VALUES (?)", (version,))
+
 
 async def create_table(pool: DatabasePool):
-    """Create tables and indexes for the application."""
+    """Run all pending migrations to bring the database schema up to date."""
     conn = await pool.get_connection()
     try:
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS users (
-                user_id INTEGER PRIMARY KEY,
-                api_key TEXT,
-                model_name TEXT,
-                grounding INTEGER DEFAULT 0,
-                system_instruction TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS knowledge_base (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                file_name TEXT NOT NULL,
-                file_id TEXT NOT NULL,
-                content_preview TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS reminders (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                reminder_text TEXT NOT NULL,
-                remind_at TIMESTAMP NOT NULL,
-                status TEXT DEFAULT 'pending',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS conversations (
-                id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
-                conv_id TEXT NOT NULL UNIQUE,
-                user_id INTEGER NOT NULL,
-                title TEXT NOT NULL,
-                history TEXT,
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
-        await conn.execute(
-            """
-            CREATE TABLE IF NOT EXISTS tasks (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                user_id INTEGER NOT NULL,
-                prompt TEXT NOT NULL,
-                run_time TEXT NOT NULL,
-                interval TEXT NOT NULL,
-                plan_json TEXT,
-                start_date TEXT,
-                status TEXT DEFAULT 'active',
-                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-            );
-            """
-        )
+        current_version = await _get_schema_version(conn)
+        target_version = len(MIGRATIONS)
 
-        # Phase 2.2: Add indexes for lookup columns
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_conversations_user_id ON conversations(user_id);")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_tasks_user_id ON tasks(user_id);")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_knowledge_base_user_id ON knowledge_base(user_id);")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_status_remind_at ON reminders(status, remind_at);")
-        await conn.execute("CREATE INDEX IF NOT EXISTS idx_reminders_user_id ON reminders(user_id);")
+        if current_version >= target_version:
+            logger.info(f"Database schema is up to date (v{current_version})")
+            return
 
+        logger.info(f"Running migrations: v{current_version} -> v{target_version}")
+
+        for i in range(current_version, target_version):
+            migration_func = MIGRATIONS[i]
+            logger.info(f"  Running migration {i + 1}: {migration_func.__doc__ or migration_func.__name__}")
+            await migration_func(conn)
+
+        await _set_schema_version(conn, target_version)
         await conn.commit()
-        logger.info("Database tables and indexes created successfully")
+        logger.info(f"Database schema migrated to v{target_version}")
     except Exception as e:
-        logger.error(f"Database table creation error: {e}", exc_info=True)
+        logger.error(f"Database migration error: {e}", exc_info=True)
     finally:
         await pool.release_connection(conn)
 
@@ -125,18 +176,42 @@ async def select_conversations_by_user(pool: DatabasePool, conversation_page):
     from config import ITEMS_PER_PAGE
     user_id, offset = conversation_page
     rows = await pool.execute_fetch_all(
-        f"SELECT id, conv_id, user_id, title FROM conversations WHERE user_id=? ORDER BY id DESC LIMIT {ITEMS_PER_PAGE} OFFSET ?;",
+        f"SELECT id, conv_id, user_id, title, history, created_at FROM conversations WHERE user_id=? ORDER BY id DESC LIMIT {ITEMS_PER_PAGE} OFFSET ?;",
         (user_id, offset),
     )
-    return [
-        {
+    result = []
+    for row in rows:
+        # Count messages from history JSON
+        msg_count = 0
+        last_message = ""
+        history_raw = row["history"]
+        if history_raw:
+            try:
+                history = json.loads(history_raw)
+                msg_count = len(history)
+                # Get last user message as preview
+                for entry in reversed(history):
+                    if entry.get("role") == "user":
+                        parts = entry.get("parts", [])
+                        for p in parts:
+                            if p.get("text"):
+                                last_message = p["text"][:80]
+                                break
+                        if last_message:
+                            break
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        result.append({
             "id": row["id"],
             "conversation_id": row["conv_id"],
             "user_id": row["user_id"],
             "title": row["title"],
-        }
-        for row in rows
-    ]
+            "message_count": msg_count,
+            "last_message": last_message,
+            "created_at": row["created_at"],
+        })
+    return result
 
 
 async def select_conversation_by_id(pool: DatabasePool, conversation):

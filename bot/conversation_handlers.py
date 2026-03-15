@@ -6,9 +6,13 @@ import uuid
 import math
 import json
 import asyncio
+import contextvars
 import google.generativeai as genai
 from functools import wraps
 from datetime import datetime
+
+# Context variable to propagate user_id into all log records within a handler
+_current_user_id = contextvars.ContextVar('current_user_id', default='-')
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
@@ -116,6 +120,7 @@ def restricted(func):
             return
 
         metrics.increment("messages_processed")
+        _current_user_id.set(str(user_id))
         return await func(update, context, *args, **kwargs)
 
     return wrapped
@@ -462,30 +467,91 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
 
 @restricted
 async def get_conversation_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """Retrieve a specific conversation."""
+    """Retrieve a specific conversation via inline button or typed command."""
     try:
-        conv_id = update.message.text.strip().replace("/", "")
+        # Support both inline button (callback_query) and typed /convXXX command
+        if update.callback_query:
+            query = update.callback_query
+            await query.answer()
+            conv_id = query.data.split("#")[1]
+        else:
+            conv_id = update.message.text.strip().replace("/", "")
+
         user_id = update.effective_user.id
         pool = _get_pool(context)
 
         conversation = await select_conversation_by_id(pool, (user_id, conv_id))
         if not conversation:
-            await update.message.reply_text(_("Conversation not found."))
+            msg = _("Conversation not found.")
+            if update.callback_query:
+                await update.callback_query.edit_message_text(msg)
+            else:
+                await update.message.reply_text(msg)
             return CONVERSATION_HISTORY
 
         context.user_data["conversation_id"] = conv_id
 
+        # Build a detail card
+        title = conversation.get('title', 'Untitled')
+        msg_count = 0
+        last_exchange = ""
+        history_raw = conversation.get('history')
+        if history_raw:
+            try:
+                history = json.loads(history_raw)
+                msg_count = len(history)
+                # Show last 2 exchanges as preview
+                recent = []
+                for entry in history[-4:]:
+                    role = entry.get('role', '')
+                    parts = entry.get('parts', [])
+                    text_parts = [p.get('text', '') for p in parts if p.get('text')]
+                    if text_parts:
+                        preview_text = text_parts[0][:100]
+                        if len(text_parts[0]) > 100:
+                            preview_text += "..."
+                        emoji = "👤" if role == "user" else "🤖"
+                        recent.append(f"  {emoji} {preview_text}")
+                if recent:
+                    last_exchange = "\n".join(recent)
+            except (json.JSONDecodeError, TypeError):
+                pass
+
+        detail = f"📂 *{title}*\n"
+        detail += "━" * 24 + "\n\n"
+        detail += f"📊 Messages: {msg_count}\n"
+        if last_exchange:
+            detail += f"\n*Last messages:*\n{last_exchange}\n"
+        detail += "\n" + "━" * 24
+
         keyboard = [
-            [InlineKeyboardButton(_("Continue Conversations"), callback_data="New_Conversation")],
-            [InlineKeyboardButton(_("Delete Conversation"), callback_data="Delete_Conversation")],
-            [InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again")],
+            [InlineKeyboardButton(_("▶️ Continue Conversation"), callback_data="New_Conversation")],
+            [
+                InlineKeyboardButton(_("🗑 Delete"), callback_data="Delete_Conversation"),
+                InlineKeyboardButton(_("📋 Back to List"), callback_data="PAGE#1"),
+            ],
+            [InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")],
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
 
-        await update.message.reply_text(
-            text=_(f"Conversation {conv_id} retrieved. Title: {conversation.get('title')}"),
-            reply_markup=reply_markup
-        )
+        if update.callback_query:
+            try:
+                await update.callback_query.edit_message_text(
+                    text=detail, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN
+                )
+            except BadRequest:
+                await update.callback_query.edit_message_text(
+                    text=strip_markdown(detail), reply_markup=reply_markup
+                )
+        else:
+            try:
+                await update.message.reply_text(
+                    text=detail, reply_markup=reply_markup, parse_mode=ParseMode.MARKDOWN
+                )
+            except BadRequest:
+                await update.message.reply_text(
+                    text=strip_markdown(detail), reply_markup=reply_markup
+                )
     except Exception as e:
         logger.error(f"Error in get_conversation_handler: {e}", exc_info=True)
     return CONVERSATION_HISTORY
@@ -507,7 +573,7 @@ async def delete_conversation_handler(update: Update, context: ContextTypes.DEFA
 
 @restricted
 async def get_conversation_history(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    """List conversations."""
+    """List conversations with inline selection buttons."""
     query = update.callback_query
     await query.answer()
 
@@ -519,12 +585,55 @@ async def get_conversation_history(update: Update, context: ContextTypes.DEFAULT
     total_pages = math.ceil(count / ITEMS_PER_PAGE) if count > 0 else 1
 
     conversations = await select_conversations_by_user(pool, (user_id, (page_number - 1) * ITEMS_PER_PAGE))
-    content = conversations_page_content(conversations) if conversations else _("No history.")
 
-    paginator = InlineKeyboardPaginator(total_pages, current_page=page_number, data_pattern="PAGE#{page}")
-    paginator.add_after(InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again"))
+    if not conversations:
+        keyboard = [
+            [InlineKeyboardButton(_("➕ Start New Conversation"), callback_data="New_Conversation")],
+            [InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")],
+        ]
+        await query.edit_message_text(
+            _("💬 No conversations yet.\n\nStart a new conversation and save it to see it here."),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+        return CONVERSATION_HISTORY
 
-    await query.edit_message_text(text=content, reply_markup=paginator.markup, parse_mode=ParseMode.MARKDOWN)
+    content = conversations_page_content(conversations)
+
+    # Build conversation selection buttons
+    keyboard = []
+    for conv in conversations:
+        title = conv.get('title', 'Untitled')
+        if len(title) > 35:
+            title = title[:32] + "..."
+        msg_count = conv.get('message_count', 0)
+        keyboard.append([InlineKeyboardButton(
+            f"💬 {title} ({msg_count} msgs)",
+            callback_data=f"CONV_SELECT#{conv['conversation_id']}"
+        )])
+
+    # Pagination row
+    nav_buttons = []
+    if page_number > 1:
+        nav_buttons.append(InlineKeyboardButton("◀️", callback_data=f"PAGE#{page_number - 1}"))
+    nav_buttons.append(InlineKeyboardButton(f"📄 {page_number}/{total_pages}", callback_data="noop"))
+    if page_number < total_pages:
+        nav_buttons.append(InlineKeyboardButton("▶️", callback_data=f"PAGE#{page_number + 1}"))
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+
+    keyboard.append([InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")])
+
+    try:
+        await query.edit_message_text(
+            text=content,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+            parse_mode=ParseMode.MARKDOWN
+        )
+    except BadRequest:
+        await query.edit_message_text(
+            text=strip_markdown(content),
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
     return CONVERSATION_HISTORY
 
 

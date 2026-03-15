@@ -78,9 +78,17 @@ except Exception as e:
     import builtins
     builtins.__dict__['_'] = lambda x: x
 
+class UserIdFilter(logging.Filter):
+    """Inject user_id into every log record from the current async context."""
+    def filter(self, record):
+        from bot.conversation_handlers import _current_user_id
+        record.user_id = _current_user_id.get('-')
+        return True
+
 logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=LOG_LEVEL
+    format="%(asctime)s - %(name)s - %(levelname)s - [user:%(user_id)s] %(message)s", level=LOG_LEVEL
 )
+logging.root.addFilter(UserIdFilter())
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
@@ -158,6 +166,8 @@ def states():
         CONVERSATION_HISTORY: [
             CallbackQueryHandler(start_conversation, pattern="^New_Conversation$"),
             CallbackQueryHandler(get_conversation_history, pattern="^PAGE#"),
+            CallbackQueryHandler(lambda update, ctx: update.callback_query.answer(), pattern="^noop$"),
+            CallbackQueryHandler(get_conversation_handler, pattern="^CONV_SELECT#"),
             MessageHandler(filters.Regex("^/conv"), get_conversation_handler),
             CallbackQueryHandler(delete_conversation_handler, pattern="^Delete_Conversation$"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
