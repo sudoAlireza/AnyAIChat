@@ -110,14 +110,14 @@ class GeminiChat:
         # System instructions
         if not history:
             base_instruction = (
-                f"You are a helpful assistant with a female persona. {lang_instruction}"
+                f"{lang_instruction}"
                 "Use standard Markdown formatting only: *bold*, _italic_, `code`, and ```code blocks```. "
                 "Do NOT use headers (#), horizontal rules (---), or complex tables. "
                 "Do NOT escape special characters with backslashes. Just write naturally."
             )
 
             if self.system_instruction:
-                base_instruction += f"\n\nAdditional instructions for your persona: {self.system_instruction}"
+                base_instruction += f"\n\nUser-defined persona instructions: {self.system_instruction}"
 
             if self.pinned_context:
                 base_instruction += f"\n\nIMPORTANT persistent context from the user (always keep in mind): {self.pinned_context}"
