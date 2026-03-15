@@ -314,7 +314,6 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         except Exception as tag_err:
             logger.warning(f"Auto-tagging failed: {tag_err}")
 
-        await query.edit_message_reply_markup(reply_markup=None)
         await query.message.reply_text(_("Conversation saved successfully!"))
 
         # Clean up context
@@ -336,6 +335,12 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         context.user_data["model_name"] = user['model_name']
         context.user_data["web_search"] = bool(user['grounding'])
         context.user_data["system_instruction"] = user.get('system_instruction')
+
+    # If coming from a conversation (AI response message), send menu as new message
+    # to preserve the AI response. Otherwise, edit the current menu message.
+    if context.user_data.get("last_ai_response"):
+        context.user_data["last_ai_response"] = None
+        return await start_menu_new_message(update, context)
 
     return await start(update, context)
 
