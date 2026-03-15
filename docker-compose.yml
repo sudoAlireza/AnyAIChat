@@ -15,6 +15,19 @@ services:
       - AUTHORIZED_USER=${AUTHORIZED_USER}
       - LANGUAGE=${LANGUAGE}
       - LOG_LEVEL=${LOG_LEVEL}
+      - ENCRYPTION_KEY=${ENCRYPTION_KEY}
+      - ALLOW_ALL_USERS=${ALLOW_ALL_USERS:-false}
+      - SAFETY_OVERRIDE=${SAFETY_OVERRIDE:-}
+      - RATE_LIMIT_PER_MINUTE=${RATE_LIMIT_PER_MINUTE:-30}
+      - RATE_LIMIT_PER_HOUR=${RATE_LIMIT_PER_HOUR:-200}
+      - GEMINI_MAX_WORKERS=${GEMINI_MAX_WORKERS:-20}
+      - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-100}
     volumes:
       - ./data:/usr/src/app/data
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python", "healthcheck.py"]
+      interval: 60s
+      timeout: 10s
+      start_period: 30s
+      retries: 3

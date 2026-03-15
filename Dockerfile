@@ -16,5 +16,9 @@ RUN mkdir -p /usr/src/app/data
 # Copy the rest of the application's code into the container at /usr/src/app
 COPY . .
 
+# Health check
+HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
+    CMD python healthcheck.py || exit 1
+
 # Run main.py when the container launches
 CMD ["python", "main.py"]

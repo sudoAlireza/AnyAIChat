@@ -32,3 +32,6 @@ tqdm==4.67.1
 typing_extensions==4.15.0
 urllib3==2.6.2
 Babel==2.17.0
+cryptography>=41.0.0
+aiosqlite>=0.19.0
+tenacity>=8.2.0
