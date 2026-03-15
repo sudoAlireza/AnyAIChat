@@ -166,6 +166,7 @@ def states():
             CallbackQueryHandler(start_add_task, pattern="^Tasks_Add$"),
             CallbackQueryHandler(list_tasks, pattern="^Tasks_List$"),
             CallbackQueryHandler(delete_task_handler, pattern="^TASK_DELETE#"),
+            CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
         ],
         TASKS_ADD_PROMPT: [

@@ -54,7 +54,9 @@ class GeminiChat:
                 genai.configure(api_key=self.gemini_token)
                 model_tools = []
                 if "google_search" in self.tools:
-                    model_tools.append({"google_search": {}})
+                    model_tools.append(genai.protos.Tool(
+                        google_search_retrieval=genai.protos.GoogleSearchRetrieval()
+                    ))
 
                 return genai.GenerativeModel(
                     self.model_name,
@@ -106,10 +108,9 @@ class GeminiChat:
         if not history:
             base_instruction = (
                 f"You are a helpful assistant with a female persona. Please respond in {lang} language. "
-                "Please use Telegram-compatible markdown (MarkdownV2). "
-                "Use *bold* for bold text, _italic_ for italic, and `code` for code blocks. "
+                "Use standard Markdown formatting only: *bold*, _italic_, `code`, and ```code blocks```. "
                 "Do NOT use headers (#), horizontal rules (---), or complex tables. "
-                "Always escape special characters if necessary, but keep it simple."
+                "Do NOT escape special characters with backslashes. Just write naturally."
             )
 
             if self.system_instruction:
