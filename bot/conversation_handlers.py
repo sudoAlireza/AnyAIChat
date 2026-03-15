@@ -714,7 +714,7 @@ async def handle_task_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     context.user_data["task_prompt"] = update.message.text
 
     keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")]]
-    await update.message.reply_text(_("Enter time (HH:MM):"), reply_markup=InlineKeyboardMarkup(keyboard))
+    await update.message.reply_text(_("Enter time (HH:MM) in UTC:"), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_ADD_TIME
 
 @restricted
@@ -1159,7 +1159,7 @@ async def open_reminders_menu(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def start_add_reminder(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    await query.edit_message_text(_("Please enter your reminder in format: YYYY-MM-DD HH:MM | Reminder text\nExample: 2026-03-20 15:30 | Call Mom"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Reminders_Menu")]]))
+    await query.edit_message_text(_("Please enter your reminder in format: YYYY-MM-DD HH:MM UTC | Reminder text\nExample: 2026-03-20 15:30 | Call Mom"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Reminders_Menu")]]))
     return REMINDERS_INPUT
 
 @restricted
