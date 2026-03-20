@@ -270,6 +270,24 @@ async def m013_task_hashtag(conn):
         await conn.execute("UPDATE tasks SET hashtag=? WHERE id=?", (tag, row[0]))
 
 
+@migration
+async def m014_token_usage(conn):
+    """v14: Create token_usage table for per-user token tracking."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS token_usage (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            prompt_tokens INTEGER NOT NULL DEFAULT 0,
+            completion_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            model_name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_user ON token_usage(user_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(user_id, created_at);")
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -901,3 +919,40 @@ async def create_conversation_branch(pool: DatabasePool, user_id, source_conv_id
     """Create a branched copy of a conversation."""
     sql = "INSERT INTO conversations(conv_id, user_id, title, history) VALUES(?,?,?,?)"
     return await pool.execute_insert(sql, (new_conv_id, user_id, f"[Branch] {title}", history))
+
+
+# --- Token Usage Functions ---
+
+async def record_token_usage(pool: DatabasePool, user_id, prompt_tokens, completion_tokens, total_tokens, model_name=None):
+    """Record token usage for a user."""
+    sql = "INSERT INTO token_usage(user_id, prompt_tokens, completion_tokens, total_tokens, model_name) VALUES(?,?,?,?,?)"
+    return await pool.execute_insert(sql, (user_id, prompt_tokens, completion_tokens, total_tokens, model_name))
+
+
+async def get_user_token_stats(pool: DatabasePool, user_id):
+    """Get aggregated token usage statistics for a user."""
+    stats = {}
+
+    r = await pool.execute_fetch_one(
+        "SELECT COALESCE(SUM(prompt_tokens),0) as p, COALESCE(SUM(completion_tokens),0) as c, "
+        "COALESCE(SUM(total_tokens),0) as t, COUNT(*) as n FROM token_usage WHERE user_id=?",
+        (user_id,),
+    )
+    stats["prompt_tokens"] = r["p"] if r else 0
+    stats["completion_tokens"] = r["c"] if r else 0
+    stats["total_tokens"] = r["t"] if r else 0
+    stats["total_requests"] = r["n"] if r else 0
+
+    r = await pool.execute_fetch_one(
+        "SELECT COALESCE(SUM(total_tokens),0) as t FROM token_usage WHERE user_id=? AND DATE(created_at)=DATE('now')",
+        (user_id,),
+    )
+    stats["today_tokens"] = r["t"] if r else 0
+
+    r = await pool.execute_fetch_one(
+        "SELECT COALESCE(SUM(total_tokens),0) as t FROM token_usage WHERE user_id=? AND created_at >= DATETIME('now', '-7 days')",
+        (user_id,),
+    )
+    stats["week_tokens"] = r["t"] if r else 0
+
+    return stats

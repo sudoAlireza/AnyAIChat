@@ -9,10 +9,8 @@ import math
 import json
 import asyncio
 import contextvars
-import google.generativeai as genai
 from functools import wraps
 from datetime import datetime, timedelta
-import time
 import httpx
 
 # Context variable to propagate user_id into all log records within a handler
@@ -82,6 +80,8 @@ from database.database import (
     update_monitor_hash,
     update_conversation_resume,
     create_conversation_branch,
+    record_token_usage,
+    get_user_token_stats,
 )
 from helpers.inline_paginator import InlineKeyboardPaginator
 from helpers.helpers import conversations_page_content, strip_markdown, split_message, escape_markdown_v2
@@ -249,7 +249,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     model_name = context.user_data.get("model_name")
                     tools = ["google_search"] if context.user_data.get("web_search") else []
                     gemini = GeminiChat(api_key, model_name=model_name, tools=tools, system_instruction=sys_instr)
-                    await gemini.async_start_chat()
+                    await gemini.start_chat()
                     context.user_data["gemini_chat"] = gemini
                     context.user_data["conversation_id"] = None
 
@@ -321,7 +321,7 @@ async def handle_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     # Validate key with a lightweight API call
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
-        models = await GeminiChat.async_list_models(api_key=api_key)
+        models = await GeminiChat.list_models(api_key=api_key)
         if not models:
             await update.message.reply_text(_("API key validation failed. The key doesn't seem to work. Please check and try again:"))
             return API_KEY_INPUT
@@ -361,7 +361,7 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     gemini_chat = context.user_data.get("gemini_chat")
     if gemini_chat and query and "_SAVE" in query.data:
         history = gemini_chat.get_chat_history()
-        title = await gemini_chat.async_get_chat_title()
+        title = await gemini_chat.get_chat_title()
         conv_id = context.user_data.get("conversation_id") or f"conv{uuid.uuid4().hex[:6]}"
 
         await create_conversation(pool, (conv_id, user_id, title, json.dumps(history)))
@@ -513,7 +513,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
 
             api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
             gemini_chat = GeminiChat(api_key, chat_history=history, model_name=model_name, tools=tools, system_instruction=system_instruction, knowledge_base=knowledge, pinned_context=pinned_context, language=user_language)
-            await gemini_chat.async_start_chat()
+            await gemini_chat.start_chat()
             context.user_data["gemini_chat"] = gemini_chat
 
         # Handle Multimodal Inputs
@@ -540,7 +540,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             # Voice-to-Action: parse command from audio without extra API call
             try:
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-                command = await gemini_chat.async_parse_voice_command_from_file(file_path)
+                command = await gemini_chat.parse_voice_command_from_file(file_path)
                 logger.info(f"Voice Command Parsed: {command}")
 
                 if command.get('action') == 'set_reminder':
@@ -616,6 +616,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
         await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
         # Try streaming first for text-only messages, fall back to regular
+        usage = None
         try:
             async def _stream_update(partial):
                 try:
@@ -623,12 +624,16 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
                 except BadRequest:
                     pass
 
-            response_text = await gemini_chat.async_send_message_streaming(
+            response_text, usage = await gemini_chat.send_message_streaming(
                 prompt, on_update=_stream_update, image=image, file_path=file_path, file_mime_type=file_mime_type
             )
         except Exception as stream_err:
             logger.warning(f"Streaming failed, falling back to regular: {stream_err}")
-            response_text = await gemini_chat.async_send_message(prompt, image=image, file_path=file_path, file_mime_type=file_mime_type)
+            response_text, usage = await gemini_chat.send_message(prompt, image=image, file_path=file_path, file_mime_type=file_mime_type)
+
+        # Record token usage
+        if usage:
+            await record_token_usage(pool, user_id, usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"], model_name=gemini_chat.model_name)
 
         # Phase 4.3: Conversation length warning
         history_length = gemini_chat.get_history_length()
@@ -636,7 +641,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             response_text += "\n\n⚠️ This conversation has become very long. It has been auto-saved. Please start a new conversation for best performance."
             # Auto-save
             history = gemini_chat.get_chat_history()
-            title = await gemini_chat.async_get_chat_title()
+            title = await gemini_chat.get_chat_title()
             conv_id = context.user_data.get("conversation_id") or f"conv{uuid.uuid4().hex[:6]}"
             await create_conversation(pool, (conv_id, user_id, title, json.dumps(history)))
             context.user_data["gemini_chat"] = None
@@ -1154,7 +1159,7 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
     msg = await query.edit_message_text(_("Generating plan..."))
     api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
     gemini = GeminiChat(api_key)
-    raw_result = await gemini.async_generate_plan(prompt, num_days=num_days)
+    raw_result = await gemini.generate_plan(prompt, num_days=num_days)
 
     # Strip markdown fences if present
     clean = raw_result
@@ -1469,7 +1474,9 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
         tools = ["google_search"] if user and user.get('grounding') else []
 
         gemini = GeminiChat(api_key, model_name=model_name, tools=tools)
-        response = await gemini.async_one_shot(target_prompt)
+        response, usage = await gemini.one_shot(target_prompt)
+        if usage and pool:
+            await record_token_usage(pool, user_id, usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"], model_name=gemini.model_name)
         if days_passed and plan_total:
             header = f"📬 *Day {days_passed}/{plan_total}* {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         else:
@@ -1595,7 +1602,7 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
-    models = await GeminiChat.async_list_models(api_key=api_key)
+    models = await GeminiChat.list_models(api_key=api_key)
     if not models:
         await query.edit_message_text(_("Failed to fetch models or no models available."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back"), callback_data="Settings_Menu")]]))
         return SETTINGS_MENU
@@ -1709,7 +1716,7 @@ async def open_storage_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
-    files = await GeminiChat.async_list_uploaded_files(api_key=api_key)
+    files = await GeminiChat.list_uploaded_files(api_key=api_key)
     if not files:
         content = _("No files currently stored in Gemini's temporary storage.")
     else:
@@ -1829,7 +1836,7 @@ async def handle_reminder_input(update: Update, context: ContextTypes.DEFAULT_TY
             "Return ONLY a JSON object with: 'text' (reminder text), 'datetime' (YYYY-MM-DD HH:MM format), "
             "'recurring' (null, 'daily', or 'weekly'). No other text or markdown."
         )
-        result = await gemini.async_one_shot(parse_prompt)
+        result, _ = await gemini.one_shot(parse_prompt)
         parsed = json.loads(result.strip().replace("```json", "").replace("```", ""))
 
         remind_text = parsed.get('text', text)
@@ -1914,11 +1921,8 @@ async def handle_knowledge_input(update: Update, context: ContextTypes.DEFAULT_T
     api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
     gemini = GeminiChat(api_key)
     try:
-        loop = asyncio.get_event_loop()
-        uploaded_file = await loop.run_in_executor(None, lambda: genai.upload_file(path=file_path, mime_type=doc.mime_type))
-        model = gemini._get_model()
-        response = await loop.run_in_executor(None, lambda: model.generate_content(["Summarize this document in 2-3 sentences to be used as context for future queries.", uploaded_file]))
-        preview = response.text.strip()
+        uploaded_file = await gemini.upload_file(file_path, doc.mime_type)
+        preview = await gemini.generate_content_with_file("Summarize this document in 2-3 sentences to be used as context for future queries.", uploaded_file)
 
         pool = _get_pool(context)
         await add_knowledge(pool, (update.effective_user.id, doc.file_name, doc.file_id, preview))
@@ -1964,7 +1968,7 @@ async def generate_image_handler(update: Update, context: ContextTypes.DEFAULT_T
     try:
         api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
         gemini = GeminiChat(api_key)
-        response = await gemini.async_generate_image(prompt)
+        response = await gemini.generate_image(prompt)
 
         await msg.edit_text(_("🎨 Image generation requested for: ") + prompt + _("\n\n(Note: Imagen API integration is experimental and may require specific account permissions)"))
     except Exception as e:
@@ -2342,18 +2346,17 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
     if stats.get('member_since'):
         text += f"\n📅 Using since: {str(stats['member_since'])[:10]}"
 
-    # Add metrics from monitoring if available
-    from monitoring.metrics import metrics as app_metrics
-    if app_metrics:
-        summary = app_metrics.get_summary()
-        counters = summary.get('counters', {})
-        msg_count = counters.get('gemini_messages_sent', 0)
-        if msg_count:
-            text += f"\n\n📈 *Session Stats*\n"
-            text += f"Messages sent: {msg_count}\n"
-            rate_hits = counters.get('rate_limit_hits', 0)
-            if rate_hits:
-                text += f"Rate limit hits: {rate_hits}\n"
+    # Per-user token usage from database
+    token_stats = await get_user_token_stats(pool, user_id)
+    if token_stats and token_stats.get("total_tokens"):
+        text += f"\n\n🔢 *Token Usage*\n"
+        text += f"Total: {token_stats['total_tokens']:,} tokens ({token_stats['total_requests']} requests)\n"
+        text += f"  Input: {token_stats['prompt_tokens']:,}\n"
+        text += f"  Output: {token_stats['completion_tokens']:,}\n"
+        if token_stats.get('today_tokens'):
+            text += f"Today: {token_stats['today_tokens']:,}\n"
+        if token_stats.get('week_tokens'):
+            text += f"Last 7 days: {token_stats['week_tokens']:,}\n"
 
     keyboard = [[InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")]]
 
@@ -2600,7 +2603,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         gemini = GeminiChat(api_key)
-        response = await gemini.async_one_shot(f"Answer briefly and concisely in 2-3 sentences: {query_text}")
+        response, _ = await gemini.one_shot(f"Answer briefly and concisely in 2-3 sentences: {query_text}")
 
         description = response[:100] if response else "No response"
         results = [InlineQueryResultArticle(
@@ -2717,7 +2720,7 @@ async def select_template_handler(update: Update, context: ContextTypes.DEFAULT_
         system_instruction=template['persona'],
         pinned_context=pinned_context, language=user_language,
     )
-    await gemini_chat.async_start_chat()
+    await gemini_chat.start_chat()
     context.user_data["gemini_chat"] = gemini_chat
 
     await query.edit_message_text(
@@ -2782,7 +2785,7 @@ async def start_translation_handler(update: Update, context: ContextTypes.DEFAUL
     api_key = context.user_data.get("api_key") or (user_data.get('api_key') if user_data else None) or GEMINI_API_TOKEN
 
     gemini_chat = GeminiChat(api_key, system_instruction=persona)
-    await gemini_chat.async_start_chat()
+    await gemini_chat.start_chat()
     context.user_data["gemini_chat"] = gemini_chat
 
     await query.edit_message_text(
@@ -3001,7 +3004,7 @@ async def suggest_followup_handler(update: Update, context: ContextTypes.DEFAULT
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        response = await gemini_chat.async_send_message(
+        response, _ = await gemini_chat.send_message(
             "Based on our conversation, suggest exactly 3 brief follow-up questions I could ask. "
             "Format: numbered list, one line each. Keep them short and specific."
         )
