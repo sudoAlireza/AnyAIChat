@@ -1642,28 +1642,67 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     current_model = context.user_data.get("model_name") or GEMINI_MODEL
 
-    # Filter and categorize models
-    top_patterns = ['gemini-2.5', 'gemini-2.0-flash', 'gemini-1.5-pro', 'gemini-1.5-flash']
-    skip_patterns = ['exp', 'tuning', 'embedding', 'aqa', 'vision', 'imagen', 'text-']
+    # Filter out non-chat models
+    skip_patterns = [
+        'embedding', 'aqa', 'imagen', 'veo', 'text-',
+        'tts', 'image', 'native-audio', 'robotics',
+        'computer-use', 'deep-research', 'customtools',
+        'nano-banana', 'gemma', 'tuning',
+    ]
 
-    featured = []
-    others = []
+    def _parse_model_version(name_lower):
+        """Extract (major, minor, tier) for sorting. Higher = newer."""
+        import re as _re
+        # Match gemini-X.Y or gemini-X patterns
+        vm = _re.search(r'gemini-(\d+)(?:\.(\d+))?', name_lower)
+        if not vm:
+            # "latest" aliases without version get sorted high
+            if 'latest' in name_lower:
+                return (99, 0, 0)
+            return (0, 0, 0)
+        major = int(vm.group(1))
+        minor = int(vm.group(2)) if vm.group(2) else 0
+        # Tier: pro > flash > flash-lite/lite, stable > preview > versioned
+        if 'pro' in name_lower:
+            tier = 3
+        elif 'lite' in name_lower:
+            tier = 1
+        elif 'flash' in name_lower:
+            tier = 2
+        else:
+            tier = 2  # generic/latest aliases
+        # Penalize point-release suffixes like -001
+        if _re.search(r'-\d{3}$', name_lower):
+            tier -= 0.5
+        # Penalize preview
+        if 'preview' in name_lower:
+            tier -= 0.1
+        return (major, minor, tier)
+
+    chat_models = []
     for m in models:
         name_lower = m['name'].lower()
         if any(s in name_lower for s in skip_patterns):
             continue
-        if any(t in name_lower for t in top_patterns):
-            featured.append(m)
-        else:
-            others.append(m)
+        if not name_lower.startswith('models/gemini'):
+            continue
+        chat_models.append(m)
+
+    # Sort all chat models: latest version first, then pro > flash > lite
+    chat_models.sort(key=lambda m: _parse_model_version(m['name'].lower()), reverse=True)
+
+    # Split into featured (top 8) and others
+    featured = chat_models[:8]
+    others = chat_models[8:]
 
     show_all = context.user_data.get("show_all_models", False)
 
     # Brief description from API or fallback
     desc_map = {
-        'pro': '🏆 Most capable',
-        'flash': '⚡ Fast & efficient',
-        'lite': '🪶 Lightweight',
+        'pro': '🏆 Pro',
+        'flash-lite': '🪶 Lite',
+        'flash': '⚡ Flash',
+        'lite': '🪶 Lite',
     }
 
     text = "🤖 *Choose a Gemini Model*\n\n"
