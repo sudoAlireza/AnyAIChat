@@ -1195,48 +1195,8 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         context.user_data["task_hashtag"] = f"#{ai_title}" if ai_title else ""
         context.user_data["task_plan"] = json.dumps(plan)
 
-        milestones = {num_days // 4, num_days // 2, 3 * num_days // 4, num_days}
-        total_days = len(plan)
-        TELEGRAM_LIMIT = 4096
-        RESERVE = 200
-
         preview_hashtag = context.user_data.get("task_hashtag", "")
-        text = f"📋 *{num_days}-Day Plan* {preview_hashtag}\n"
-        text += f"📝 _{prompt[:60]}_\n"
-        text += f"⏰ {run_time} UTC | 🔄 {_format_interval(interval)}\n"
-        text += "━" * 25 + "\n\n"
-
-        current_phase = None
-        truncated = False
-        for day in plan:
-            phase = day.get('phase', '')
-            if phase and phase != current_phase:
-                current_phase = phase
-                phase_line = f"\n📌 *{phase}*\n\n"
-                if len(text) + len(phase_line) + RESERVE > TELEGRAM_LIMIT:
-                    day_num = day.get('day', '?')
-                    remaining = total_days - day_num + 1
-                    text += f"\n_... and {remaining} more days_\n"
-                    truncated = True
-                    break
-                text += phase_line
-
-            day_num = day.get('day', '?')
-            title = day.get('title', '')
-
-            if day_num in milestones:
-                line = f"  🏁 Day {day_num}: *{title}*\n"
-            else:
-                line = f"  📅 Day {day_num}: *{title}*\n"
-
-            if len(text) + len(line) + RESERVE > TELEGRAM_LIMIT:
-                remaining = total_days - day_num + 1
-                text += f"\n_... and {remaining} more days_\n"
-                truncated = True
-                break
-            text += line
-
-        text += "\n" + "━" * 25
+        text = _build_plan_text(plan, prompt, run_time, interval, preview_hashtag, num_days)
         text += _("\n\nDo you approve this plan?")
         keyboard = [
             [InlineKeyboardButton(_("✅ Approve"), callback_data="Plan_Approve")],
@@ -1302,43 +1262,7 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
     num_days = context.user_data.get("task_days", 30)
     try:
         plan = json.loads(plan_json)
-        milestones = {num_days // 4, num_days // 2, 3 * num_days // 4, num_days}
-        total_days = len(plan)
-        TELEGRAM_LIMIT = 4096
-        RESERVE = 100
-
-        plan_text = f"📋 *{num_days}-Day Plan* {hashtag}\n"
-        plan_text += f"📝 _{prompt[:60]}_\n"
-        plan_text += f"⏰ {run_time} UTC | 🔄 {_format_interval(interval)}\n"
-        plan_text += "━" * 25 + "\n\n"
-
-        current_phase = None
-        for day in plan:
-            phase = day.get('phase', '')
-            if phase and phase != current_phase:
-                current_phase = phase
-                phase_line = f"\n📌 *{phase}*\n\n"
-                if len(plan_text) + len(phase_line) + RESERVE > TELEGRAM_LIMIT:
-                    day_num = day.get('day', '?')
-                    remaining = total_days - day_num + 1
-                    plan_text += f"\n_... and {remaining} more days_\n"
-                    break
-                plan_text += phase_line
-
-            day_num = day.get('day', '?')
-            title = day.get('title', '')
-            if day_num in milestones:
-                line = f"  🏁 Day {day_num}: *{title}*\n"
-            else:
-                line = f"  📅 Day {day_num}: *{title}*\n"
-            if len(plan_text) + len(line) + RESERVE > TELEGRAM_LIMIT:
-                remaining = total_days - day_num + 1
-                plan_text += f"\n_... and {remaining} more days_\n"
-                break
-            plan_text += line
-
-        plan_text += "\n" + "━" * 25
-
+        plan_text = _build_plan_text(plan, prompt, run_time, interval, hashtag, num_days)
         try:
             await context.bot.send_message(
                 chat_id=update.effective_chat.id, text=plan_text, parse_mode=ParseMode.MARKDOWN,
@@ -1356,6 +1280,49 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
     )
     return TASKS_MENU
 
+def _build_plan_text(plan, prompt, run_time, interval, hashtag, num_days=None):
+    """Build the plan preview text used in task view and persistent message."""
+    if num_days is None:
+        num_days = len(plan)
+    milestones = {num_days // 4, num_days // 2, 3 * num_days // 4, num_days}
+    total_days = len(plan)
+    TELEGRAM_LIMIT = 4096
+    RESERVE = 200
+
+    text = f"📋 *{num_days}-Day Plan* {hashtag}\n"
+    text += f"📝 _{prompt[:60]}_\n"
+    text += f"⏰ {run_time} UTC | 🔄 {_format_interval(interval)}\n"
+    text += "━" * 25 + "\n\n"
+
+    current_phase = None
+    for day in plan:
+        phase = day.get('phase', '')
+        if phase and phase != current_phase:
+            current_phase = phase
+            phase_line = f"\n📌 *{phase}*\n\n"
+            if len(text) + len(phase_line) + RESERVE > TELEGRAM_LIMIT:
+                day_num = day.get('day', '?')
+                remaining = total_days - day_num + 1
+                text += f"\n_... and {remaining} more days_\n"
+                break
+            text += phase_line
+
+        day_num = day.get('day', '?')
+        title = day.get('title', '')
+        if day_num in milestones:
+            line = f"  🏁 Day {day_num}: *{title}*\n"
+        else:
+            line = f"  📅 Day {day_num}: *{title}*\n"
+        if len(text) + len(line) + RESERVE > TELEGRAM_LIMIT:
+            remaining = total_days - day_num + 1
+            text += f"\n_... and {remaining} more days_\n"
+            break
+        text += line
+
+    text += "\n" + "━" * 25
+    return text
+
+
 @restricted
 async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
@@ -1367,16 +1334,57 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         await query.edit_message_text(_("No tasks."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")]]))
         return TASKS_MENU
 
-    text = _("Your tasks:\n")
+    text = _("Your tasks:\n\n")
     keyboard = []
     for t in tasks:
         tag = t.get('hashtag') or f"#Task{t['id']}"
-        text += f"{tag} | {t['run_time']} | {_format_interval(t['interval'])} | {t['prompt'][:20]}...\n"
-        keyboard.append([InlineKeyboardButton(_(f"🗑 Delete {tag}"), callback_data=f"TASK_DELETE#{tag}")])
+        text += f"{tag} | {t['run_time']} | {_format_interval(t['interval'])}\n"
+        keyboard.append([InlineKeyboardButton(f"📋 {tag}", callback_data=f"TASK_VIEW#{tag}")])
 
     keyboard.append([InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_MENU
+
+
+@restricted
+async def view_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show full plan for a task with delete and back buttons."""
+    query = update.callback_query
+    await query.answer()
+    hashtag = query.data.split("#", 1)[1]
+
+    pool = _get_pool(context)
+    tasks = await get_user_tasks(pool, update.effective_user.id)
+    task = next((t for t in tasks if (t.get('hashtag') or f"#Task{t['id']}") == hashtag), None)
+
+    if not task:
+        await query.edit_message_text(_("Task not found."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to List"), callback_data="Tasks_List")]]))
+        return TASKS_MENU
+
+    tag = task.get('hashtag') or f"#Task{task['id']}"
+    keyboard = [
+        [InlineKeyboardButton(_("🗑 Delete Task"), callback_data=f"TASK_DELETE#{tag}")],
+        [InlineKeyboardButton(_("🔙 Back to List"), callback_data="Tasks_List")],
+    ]
+
+    plan_json = task.get('plan_json')
+    if plan_json:
+        try:
+            plan = json.loads(plan_json)
+            text = _build_plan_text(plan, task['prompt'], task['run_time'], task['interval'], tag)
+            try:
+                await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+            except BadRequest:
+                await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+            return TASKS_MENU
+        except (json.JSONDecodeError, ValueError):
+            pass
+
+    # Fallback if no plan or parse error
+    text = f"{tag}\n📝 _{task['prompt'][:100]}_\n⏰ {task['run_time']} | 🔄 {_format_interval(task['interval'])}"
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+    return TASKS_MENU
+
 
 @restricted
 async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:

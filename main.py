@@ -42,6 +42,7 @@ from bot.conversation_handlers import (
     handle_task_interval,
     handle_task_plan_approval,
     list_tasks,
+    view_task_handler,
     delete_task_handler,
     back_to_time_handler,
     set_scheduler,
@@ -245,6 +246,7 @@ def states():
         TASKS_MENU: [
             CallbackQueryHandler(start_add_task, pattern="^Tasks_Add$"),
             CallbackQueryHandler(list_tasks, pattern="^Tasks_List$"),
+            CallbackQueryHandler(view_task_handler, pattern="^TASK_VIEW#"),
             CallbackQueryHandler(delete_task_handler, pattern="^TASK_DELETE#"),
             CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
