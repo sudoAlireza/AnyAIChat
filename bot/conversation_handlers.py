@@ -651,29 +651,29 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             response_text += "\n\n⚠️ This conversation is getting long. Consider starting a new conversation for better performance."
 
         # File Output: detect code blocks and offer as downloadable files
-        code_blocks = re.findall(r'```(\w*)\n(.*?)```', response_text, re.DOTALL)
-        if code_blocks:
-            ext_map = {
-                'python': '.py', 'javascript': '.js', 'typescript': '.ts', 'java': '.java',
-                'go': '.go', 'rust': '.rs', 'cpp': '.cpp', 'c': '.c', 'html': '.html',
-                'css': '.css', 'sql': '.sql', 'bash': '.sh', 'shell': '.sh',
-                'yaml': '.yaml', 'json': '.json', 'xml': '.xml', 'ruby': '.rb',
-                'php': '.php', 'swift': '.swift', 'kotlin': '.kt',
-            }
-            for lang, code in code_blocks:
-                if len(code.strip()) > 50:
-                    ext = ext_map.get(lang.lower(), '.txt') if lang else '.txt'
-                    file_name = f"code_{uuid.uuid4().hex[:6]}{ext}"
-                    file_buf = io.BytesIO(code.strip().encode('utf-8'))
-                    file_buf.name = file_name
-                    try:
-                        await message.reply_document(
-                            document=file_buf,
-                            filename=file_name,
-                            caption=f"📄 Code output ({lang or 'text'})"
-                        )
-                    except Exception as fe:
-                        logger.warning(f"Failed to send code file: {fe}")
+        # code_blocks = re.findall(r'```(\w*)\n(.*?)```', response_text, re.DOTALL)
+        # if code_blocks:
+        #     ext_map = {
+        #         'python': '.py', 'javascript': '.js', 'typescript': '.ts', 'java': '.java',
+        #         'go': '.go', 'rust': '.rs', 'cpp': '.cpp', 'c': '.c', 'html': '.html',
+        #         'css': '.css', 'sql': '.sql', 'bash': '.sh', 'shell': '.sh',
+        #         'yaml': '.yaml', 'json': '.json', 'xml': '.xml', 'ruby': '.rb',
+        #         'php': '.php', 'swift': '.swift', 'kotlin': '.kt',
+        #     }
+        #     for lang, code in code_blocks:
+        #         if len(code.strip()) > 50:
+        #             ext = ext_map.get(lang.lower(), '.txt') if lang else '.txt'
+        #             file_name = f"code_{uuid.uuid4().hex[:6]}{ext}"
+        #             file_buf = io.BytesIO(code.strip().encode('utf-8'))
+        #             file_buf.name = file_name
+        #             try:
+        #                 await message.reply_document(
+        #                     document=file_buf,
+        #                     filename=file_name,
+        #                     caption=f"📄 Code output ({lang or 'text'})"
+        #                 )
+        #             except Exception as fe:
+        #                 logger.warning(f"Failed to send code file: {fe}")
 
         # Store last response for voice/bookmark features
         context.user_data["last_ai_response"] = response_text
