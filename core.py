@@ -337,20 +337,22 @@ class GeminiChat:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10),
            retry=retry_if_exception_type((ResourceExhausted, ServiceUnavailable)))
-    def generate_plan(self, prompt: str) -> str:
-        """Fetch a structured 30-day plan from Gemini."""
+    def generate_plan(self, prompt: str, num_days: int = 30) -> str:
+        """Fetch a structured N-day plan from Gemini."""
+        milestone_days = [num_days // 4, num_days // 2, 3 * num_days // 4, num_days]
+        milestones_str = ", ".join(str(d) for d in milestone_days)
         system_instruction = (
             "You are an expert curriculum designer and learning coach. "
-            "Create a detailed, progressive 30-day learning/action plan for the topic below.\n\n"
+            f"Create a detailed, progressive {num_days}-day learning/action plan for the topic below.\n\n"
             "Guidelines:\n"
             "- Structure the plan with clear phases (e.g., Week 1: Foundations, Week 2: Core Skills, etc.)\n"
             "- Each day should build on previous days — start simple, increase complexity gradually\n"
             "- Include a mix of theory, hands-on practice, and review/reflection days\n"
             "- Make titles concise but descriptive (3-6 words)\n"
             "- Make subjects actionable — describe what the user will DO that day, not just a topic name\n"
-            "- Add milestone/review days at day 7, 14, 21, and 30\n\n"
+            f"- Add milestone/review days at day {milestones_str}\n\n"
             "Return ONLY a JSON list of objects with these fields:\n"
-            "- 'day': integer 1-30\n"
+            f"- 'day': integer 1-{num_days}\n"
             "- 'title': short title (3-6 words)\n"
             "- 'subject': one actionable sentence describing the day's activity\n"
             "- 'phase': which week/phase this belongs to (e.g., 'Week 1: Foundations')\n\n"
@@ -367,11 +369,11 @@ class GeminiChat:
             logger.error(f"Failed to generate plan: {e}")
             return "[]"
 
-    async def async_generate_plan(self, prompt: str) -> str:
+    async def async_generate_plan(self, prompt: str, num_days: int = 30) -> str:
         """Async wrapper for generate_plan."""
         loop = asyncio.get_event_loop()
         start_time = time.monotonic()
-        result = await loop.run_in_executor(_executor, lambda: self.generate_plan(prompt))
+        result = await loop.run_in_executor(_executor, lambda: self.generate_plan(prompt, num_days))
         metrics.record_latency("gemini_generate_plan", time.monotonic() - start_time)
         return result
 

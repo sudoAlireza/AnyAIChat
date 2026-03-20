@@ -445,6 +445,25 @@ async def mark_task_completed(pool: DatabasePool, task_id: int):
     )
 
 
+async def get_task_by_id(pool: DatabasePool, task_id: int):
+    """Retrieve a single task by its ID."""
+    row = await pool.execute_fetch_one(
+        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date FROM tasks WHERE id=?",
+        (task_id,),
+    )
+    if row:
+        return {
+            "id": row["id"],
+            "user_id": row["user_id"],
+            "prompt": row["prompt"],
+            "run_time": row["run_time"],
+            "interval": row["interval"],
+            "plan_json": row["plan_json"],
+            "start_date": row["start_date"],
+        }
+    return None
+
+
 # --- User Functions ---
 
 async def get_user(pool: DatabasePool, user_id):

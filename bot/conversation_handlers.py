@@ -71,6 +71,8 @@ from database.database import (
     get_user_prompts,
     delete_prompt,
     add_feedback,
+    mark_task_completed,
+    get_task_by_id,
     add_url_monitor,
     get_user_monitors,
     delete_url_monitor,
@@ -97,7 +99,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU, BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU, URL_MONITOR_MENU, URL_MONITOR_INPUT = range(30)
+CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU, BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU, URL_MONITOR_MENU, URL_MONITOR_INPUT = range(31)
 
 # Conversation templates
 CONVERSATION_TEMPLATES = [
@@ -210,6 +212,43 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["model_name"] = user['model_name']
     context.user_data["web_search"] = bool(user['grounding'])
     context.user_data["system_instruction"] = user.get('system_instruction')
+
+    # Handle deep-link: /start discuss_{task_id}_{day_num}
+    if context.args and context.args[0].startswith("discuss_"):
+        try:
+            parts = context.args[0].split("_")
+            dl_task_id = int(parts[1])
+            dl_day_num = int(parts[2])
+            task = await get_task_by_id(pool, dl_task_id)
+            if task and task["user_id"] == user_id:
+                plan = json.loads(task["plan_json"]) if task.get("plan_json") else []
+                day_item = next((item for item in plan if item["day"] == dl_day_num), None)
+                if day_item:
+                    sys_instr = (
+                        f"You are a knowledgeable tutor helping the user discuss Day {dl_day_num} of their learning plan.\n"
+                        f"Topic: {task['prompt']}\n"
+                        f"Today's title: {day_item['title']}\n"
+                        f"Today's subject: {day_item['subject']}\n\n"
+                        "Answer questions, provide examples, go deeper into the topic, or clarify concepts. "
+                        "Be conversational, helpful, and encourage curiosity."
+                    )
+                    api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+                    model_name = context.user_data.get("model_name")
+                    tools = ["google_search"] if context.user_data.get("web_search") else []
+                    gemini = GeminiChat(api_key, model_name=model_name, tools=tools, system_instruction=sys_instr)
+                    await gemini.async_start_chat()
+                    context.user_data["gemini_chat"] = gemini
+                    context.user_data["conversation_id"] = None
+
+                    keyboard = [[InlineKeyboardButton(_("🔙 Menu"), callback_data="Start_Again")]]
+                    await update.message.reply_text(
+                        f"💬 Let's discuss *Day {dl_day_num}: {day_item['title']}*\n\nSend your question.",
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return CONVERSATION
+        except (ValueError, IndexError, json.JSONDecodeError) as e:
+            logger.error(f"Failed to handle discuss deep-link: {e}")
 
     keyboard = [
         [
@@ -933,28 +972,83 @@ async def handle_task_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     context.user_data["task_prompt"] = update.message.text
 
-    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")]]
-    await update.message.reply_text(_("Enter time (HH:MM) in UTC:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")]]
+    await update.message.reply_text(_("How many days should this plan span? (7-60):"), reply_markup=InlineKeyboardMarkup(keyboard))
+    return TASKS_ADD_DAYS
+
+@restricted
+async def handle_task_days(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    text = update.message.text.strip()
+    try:
+        num_days = int(text)
+        if num_days < 7 or num_days > 60:
+            raise ValueError("Out of range")
+    except ValueError:
+        await update.message.reply_text(
+            _("Please enter a number between 7 and 60:"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")]]),
+        )
+        return TASKS_ADD_DAYS
+
+    context.user_data["task_days"] = num_days
+
+    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Days")]]
+    await update.message.reply_text(
+        _("Enter time (HH:MM) in UTC, or with timezone (e.g. 11:00 +05:00):"),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
     return TASKS_ADD_TIME
 
 @restricted
-async def handle_task_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
-    time_str = update.message.text
-    try:
-        datetime.strptime(time_str, "%H:%M")
-        context.user_data["task_time"] = time_str
+async def back_to_days_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    query = update.callback_query
+    await query.answer()
+    keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")]]
+    await query.edit_message_text(_("How many days should this plan span? (7-60):"), reply_markup=InlineKeyboardMarkup(keyboard))
+    return TASKS_ADD_DAYS
 
-        keyboard = [
-            [InlineKeyboardButton(_("Once"), callback_data="Tasks_Interval_once")],
-            [InlineKeyboardButton(_("Daily"), callback_data="Tasks_Interval_daily")],
-            [InlineKeyboardButton(_("Weekly"), callback_data="Tasks_Interval_weekly")],
-            [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")],
-        ]
-        await update.message.reply_text(_("Choose interval:"), reply_markup=InlineKeyboardMarkup(keyboard))
-        return TASKS_ADD_INTERVAL
-    except ValueError:
-        await update.message.reply_text(_("Invalid format. Use HH:MM:"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")]]))
+@restricted
+async def handle_task_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    time_str = update.message.text.strip()
+    match = re.match(r'^(\d{2}:\d{2})\s*([+-]\d{2}:\d{2})?$', time_str)
+    if not match:
+        await update.message.reply_text(
+            _("Invalid format. Use HH:MM or HH:MM +HH:MM (e.g. 14:00 +03:30):"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Days")]]),
+        )
         return TASKS_ADD_TIME
+
+    time_part = match.group(1)
+    tz_offset = match.group(2)
+
+    try:
+        dt = datetime.strptime(time_part, "%H:%M")
+    except ValueError:
+        await update.message.reply_text(
+            _("Invalid time. Use HH:MM (e.g. 14:00):"),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Days")]]),
+        )
+        return TASKS_ADD_TIME
+
+    if tz_offset:
+        sign = 1 if tz_offset[0] == '+' else -1
+        off_h, off_m = map(int, tz_offset[1:].split(":"))
+        offset_minutes = sign * (off_h * 60 + off_m)
+        total_minutes = dt.hour * 60 + dt.minute - offset_minutes
+        total_minutes = total_minutes % (24 * 60)  # wrap around midnight
+        utc_time = f"{total_minutes // 60:02d}:{total_minutes % 60:02d}"
+    else:
+        utc_time = time_part
+
+    context.user_data["task_time"] = utc_time
+
+    keyboard = [
+        [InlineKeyboardButton(_("Daily"), callback_data="Tasks_Interval_daily")],
+        [InlineKeyboardButton(_("Weekly"), callback_data="Tasks_Interval_weekly")],
+        [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Days")],
+    ]
+    await update.message.reply_text(_("Choose interval:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    return TASKS_ADD_INTERVAL
 
 @restricted
 async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
@@ -966,12 +1060,14 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
     prompt = context.user_data.get("task_prompt")
     run_time = context.user_data.get("task_time")
 
+    num_days = context.user_data.get("task_days", 30)
+
     # Generate Plan
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     msg = await query.edit_message_text(_("Generating plan..."))
     api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
     gemini = GeminiChat(api_key)
-    plan_json_str = await gemini.async_generate_plan(prompt)
+    plan_json_str = await gemini.async_generate_plan(prompt, num_days=num_days)
     context.user_data["task_plan"] = plan_json_str
     context.user_data["task_interval"] = interval
 
@@ -980,32 +1076,47 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         if not isinstance(plan, list):
              raise ValueError("Plan is not a list")
 
-        text = f"📋 *30-Day Plan: {prompt[:40]}*\n"
+        milestones = {num_days // 4, num_days // 2, 3 * num_days // 4, num_days}
+        total_days = len(plan)
+        TELEGRAM_LIMIT = 4096
+        RESERVE = 200
+
+        text = f"📋 *{num_days}-Day Plan: {prompt[:40]}*\n"
         text += f"⏰ {run_time} | 🔄 {interval}\n"
         text += "━" * 25 + "\n\n"
 
         current_phase = None
+        truncated = False
         for day in plan:
             phase = day.get('phase', '')
             if phase and phase != current_phase:
                 current_phase = phase
-                text += f"\n📌 *{phase}*\n\n"
+                phase_line = f"\n📌 *{phase}*\n\n"
+                if len(text) + len(phase_line) + RESERVE > TELEGRAM_LIMIT:
+                    day_num = day.get('day', '?')
+                    remaining = total_days - day_num + 1
+                    text += f"\n_... and {remaining} more days_\n"
+                    truncated = True
+                    break
+                text += phase_line
 
             day_num = day.get('day', '?')
             title = day.get('title', '')
-            subject = day.get('subject', '')
 
-            if day_num in (7, 14, 21, 30):
-                text += f"  🏁 Day {day_num}: *{title}*\n"
+            if day_num in milestones:
+                line = f"  🏁 Day {day_num}: *{title}*\n"
             else:
-                text += f"  📅 Day {day_num}: *{title}*\n"
-            text += f"        {subject}\n"
+                line = f"  📅 Day {day_num}: *{title}*\n"
+
+            if len(text) + len(line) + RESERVE > TELEGRAM_LIMIT:
+                remaining = total_days - day_num + 1
+                text += f"\n_... and {remaining} more days_\n"
+                truncated = True
+                break
+            text += line
 
         text += "\n" + "━" * 25
         text += _("\n\nDo you approve this plan?")
-
-        if len(text) > MAX_MESSAGE_LENGTH:
-            text = text[:3900] + "\n...\n\n_(Plan truncated for display, full plan will be saved)_" + _("\n\nDo you approve this plan?")
         keyboard = [
             [InlineKeyboardButton(_("✅ Approve"), callback_data="Plan_Approve")],
             [InlineKeyboardButton(_("❌ Reject"), callback_data="Plan_Reject")],
@@ -1027,10 +1138,9 @@ async def back_to_time_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     await query.answer()
 
     keyboard = [
-        [InlineKeyboardButton(_("Once"), callback_data="Tasks_Interval_once")],
         [InlineKeyboardButton(_("Daily"), callback_data="Tasks_Interval_daily")],
         [InlineKeyboardButton(_("Weekly"), callback_data="Tasks_Interval_weekly")],
-        [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Prompt")],
+        [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Days")],
     ]
     await query.edit_message_text(_("Choose interval:"), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_ADD_INTERVAL
@@ -1058,7 +1168,13 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
             lines = lines[:-1]
         plan_json = "\n".join(lines).strip()
 
-    start_date = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    run_hour, run_minute = map(int, run_time.split(":"))
+    scheduled_today = now.replace(hour=run_hour, minute=run_minute, second=0, microsecond=0)
+    if now >= scheduled_today:
+        start_date = (now + timedelta(days=1)).strftime("%Y-%m-%d")
+    else:
+        start_date = now.strftime("%Y-%m-%d")
 
     pool = _get_pool(context)
     task_id = await create_task(pool, (user_id, prompt, run_time, interval, plan_json, start_date))
@@ -1113,19 +1229,41 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
 
     async def task_wrapper():
         target_prompt = prompt
+        days_passed = None
+        plan_total = None
 
         if plan_json and start_date:
             try:
                 plan = json.loads(plan_json)
+                plan_total = len(plan)
                 start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                days_passed = (datetime.now() - start_dt).days + 1
+                if interval == "weekly":
+                    weeks_passed = (datetime.now() - start_dt).days // 7
+                    days_passed = weeks_passed + 1
+                else:
+                    days_passed = (datetime.now() - start_dt).days + 1
 
                 day_item = next((item for item in plan if item['day'] == days_passed), None)
-                if day_item:
+                if day_item is None and days_passed > len(plan):
+                    # Plan is complete — mark task as done
+                    completion_pool = _application.bot_data.get("db_pool")
+                    if completion_pool:
+                        await mark_task_completed(completion_pool, task_id)
+                    try:
+                        _scheduler.remove_job(str(task_id))
+                    except Exception:
+                        pass
+                    await _application.bot.send_message(
+                        chat_id=user_id,
+                        text=f"🎉 *Plan Complete!*\nYour {len(plan)}-day plan on _{prompt[:40]}_ has finished.",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                    return
+                elif day_item:
                     phase = day_item.get('phase', '')
                     phase_info = f" Phase: {phase}." if phase else ""
                     target_prompt = (
-                        f"You are delivering Day {days_passed}/30 of a structured learning plan.{phase_info}\n"
+                        f"You are delivering Day {days_passed}/{len(plan)} of a structured learning plan.{phase_info}\n"
                         f"Today's title: {day_item['title']}\n"
                         f"Today's goal: {day_item['subject']}\n"
                         f"Overall topic: {prompt}\n\n"
@@ -1150,19 +1288,31 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
         gemini = GeminiChat(api_key, model_name=model_name, tools=tools)
         await gemini.async_start_chat()
         response = await gemini.async_send_message(target_prompt)
-        header = f"📬 *Daily Task: {prompt[:50]}*\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        if days_passed and plan_total:
+            header = f"📬 *Day {days_passed}/{plan_total} — {prompt[:50]}*\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+        else:
+            header = f"📬 *Daily Task: {prompt[:50]}*\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         parts = split_message(header + response)
-        for part in parts:
+        # Build discuss button for the last message part
+        discuss_markup = None
+        if days_passed and plan_total:
+            bot_username = _application.bot_data.get("bot_username", "")
+            if bot_username:
+                discuss_url = f"https://t.me/{bot_username}?start=discuss_{task_id}_{days_passed}"
+                discuss_markup = InlineKeyboardMarkup(
+                    [[InlineKeyboardButton("💬 Discuss", url=discuss_url)]]
+                )
+        for i, part in enumerate(parts):
+            is_last = i == len(parts) - 1
+            markup = discuss_markup if is_last else None
             try:
-                await _application.bot.send_message(chat_id=user_id, text=part, parse_mode=ParseMode.MARKDOWN)
+                await _application.bot.send_message(chat_id=user_id, text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
             except BadRequest as e:
                 logger.error(f"Failed to send task result with markdown: {e}")
-                await _application.bot.send_message(chat_id=user_id, text=strip_markdown(part))
+                await _application.bot.send_message(chat_id=user_id, text=strip_markdown(part), reply_markup=markup)
 
     job_id = str(task_id)
-    if interval == "once":
-        _scheduler.add_job(task_wrapper, 'cron', hour=hour, minute=minute, id=job_id, replace_existing=True)
-    elif interval == "daily":
+    if interval == "daily":
         _scheduler.add_job(task_wrapper, 'cron', hour=hour, minute=minute, id=job_id, replace_existing=True)
     elif interval == "weekly":
         _scheduler.add_job(task_wrapper, 'cron', day_of_week='mon', hour=hour, minute=minute, id=job_id, replace_existing=True)

@@ -35,6 +35,8 @@ from bot.conversation_handlers import (
     open_tasks_menu,
     start_add_task,
     handle_task_prompt,
+    handle_task_days,
+    back_to_days_handler,
     handle_task_time,
     handle_task_interval,
     handle_task_plan_approval,
@@ -145,7 +147,7 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU, BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU, URL_MONITOR_MENU, URL_MONITOR_INPUT = range(30)
+CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU, BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU, URL_MONITOR_MENU, URL_MONITOR_INPUT = range(31)
 
 
 def _check_access_config():
@@ -250,13 +252,17 @@ def states():
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_prompt),
             CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
         ],
+        TASKS_ADD_DAYS: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_days),
+            CallbackQueryHandler(open_tasks_menu, pattern="^Tasks_Menu$"),
+        ],
         TASKS_ADD_TIME: [
             MessageHandler(filters.TEXT & ~filters.COMMAND, handle_task_time),
-            CallbackQueryHandler(start_add_task, pattern="^Tasks_Add$"),
+            CallbackQueryHandler(back_to_days_handler, pattern="^Back_To_Days$"),
         ],
         TASKS_ADD_INTERVAL: [
             CallbackQueryHandler(handle_task_interval, pattern="^Tasks_Interval_"),
-            CallbackQueryHandler(handle_task_prompt, pattern="^Back_To_Prompt$"),
+            CallbackQueryHandler(back_to_days_handler, pattern="^Back_To_Days$"),
         ],
         TASKS_CONFIRM_PLAN: [
             CallbackQueryHandler(handle_task_plan_approval, pattern="^Plan_"),
@@ -393,6 +399,10 @@ async def post_init(application: Application):
         BotCommand("start", "Open main menu"),
         BotCommand("image", "Generate an image (use in conversation)"),
     ])
+
+    # Store bot username for deep-link URLs
+    bot_info = await application.bot.get_me()
+    application.bot_data["bot_username"] = bot_info.username
 
     # Initialize async database pool
     pool = DatabasePool(DATABASE_PATH)
