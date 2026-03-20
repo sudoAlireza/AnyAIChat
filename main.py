@@ -38,6 +38,7 @@ from bot.conversation_handlers import (
     handle_task_days,
     back_to_days_handler,
     handle_task_time,
+    handle_day_toggle,
     handle_task_interval,
     handle_task_plan_approval,
     list_tasks,
@@ -261,7 +262,8 @@ def states():
             CallbackQueryHandler(back_to_days_handler, pattern="^Back_To_Days$"),
         ],
         TASKS_ADD_INTERVAL: [
-            CallbackQueryHandler(handle_task_interval, pattern="^Tasks_Interval_"),
+            CallbackQueryHandler(handle_day_toggle, pattern="^Tasks_Day_"),
+            CallbackQueryHandler(handle_task_interval, pattern="^Tasks_Interval_confirm$"),
             CallbackQueryHandler(back_to_days_handler, pattern="^Back_To_Days$"),
         ],
         TASKS_CONFIRM_PLAN: [

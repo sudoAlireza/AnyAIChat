@@ -1041,21 +1041,90 @@ async def handle_task_time(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         utc_time = time_part
 
     context.user_data["task_time"] = utc_time
+    context.user_data["task_selected_days"] = set()
 
-    keyboard = [
-        [InlineKeyboardButton(_("Daily"), callback_data="Tasks_Interval_daily")],
-        [InlineKeyboardButton(_("Weekly"), callback_data="Tasks_Interval_weekly")],
+    keyboard = _build_days_keyboard(set())
+    await update.message.reply_text(_("Choose which days to run:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    return TASKS_ADD_INTERVAL
+
+
+_ALL_DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+_DAY_LABELS = {"mon": "Mon", "tue": "Tue", "wed": "Wed", "thu": "Thu", "fri": "Fri", "sat": "Sat", "sun": "Sun"}
+
+def _normalize_interval(interval: str) -> str:
+    """Convert legacy 'daily'/'weekly'/'once' to day-of-week format."""
+    if interval in ("daily", "once"):
+        return ",".join(_ALL_DAYS)
+    if interval == "weekly":
+        return "mon"
+    return interval
+
+def _format_interval(interval: str) -> str:
+    """Format interval string for display (e.g. 'mon,wed,fri' -> 'Mon, Wed, Fri')."""
+    interval = _normalize_interval(interval)
+    days = interval.split(",")
+    if set(days) == set(_ALL_DAYS):
+        return "Every Day"
+    return ", ".join(_DAY_LABELS.get(d, d) for d in days)
+
+def _build_days_keyboard(selected: set) -> list:
+    """Build inline keyboard with day-of-week toggle buttons."""
+    row1, row2 = [], []
+    for i, day in enumerate(_ALL_DAYS):
+        check = "✅ " if day in selected else ""
+        btn = InlineKeyboardButton(f"{check}{_DAY_LABELS[day]}", callback_data=f"Tasks_Day_{day}")
+        if i < 4:
+            row1.append(btn)
+        else:
+            row2.append(btn)
+    all_selected = selected == set(_ALL_DAYS)
+    all_label = "✅ " + _("Every Day") if all_selected else _("Every Day")
+    return [
+        row1,
+        row2,
+        [InlineKeyboardButton(all_label, callback_data="Tasks_Day_all")],
+        [InlineKeyboardButton(_("✅ Confirm"), callback_data="Tasks_Interval_confirm")],
         [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Days")],
     ]
-    await update.message.reply_text(_("Choose interval:"), reply_markup=InlineKeyboardMarkup(keyboard))
+
+@restricted
+async def handle_day_toggle(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Toggle a day-of-week selection or select all."""
+    query = update.callback_query
+    await query.answer()
+
+    selected = context.user_data.get("task_selected_days", set())
+    day = query.data.split("_")[-1]  # e.g. "mon" or "all"
+
+    if day == "all":
+        if selected == set(_ALL_DAYS):
+            selected = set()
+        else:
+            selected = set(_ALL_DAYS)
+    else:
+        if day in selected:
+            selected.discard(day)
+        else:
+            selected.add(day)
+
+    context.user_data["task_selected_days"] = selected
+    keyboard = _build_days_keyboard(selected)
+    await query.edit_message_text(_("Choose which days to run:"), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_ADD_INTERVAL
+
 
 @restricted
 async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    interval = query.data.split("_")[-1]
 
+    selected = context.user_data.get("task_selected_days", set())
+    if not selected:
+        await query.answer(_("Please select at least one day."), show_alert=True)
+        return TASKS_ADD_INTERVAL
+
+    # Store as sorted comma-separated string: "mon,wed,fri"
+    interval = ",".join(d for d in _ALL_DAYS if d in selected)
     user_id = update.effective_user.id
     prompt = context.user_data.get("task_prompt")
     run_time = context.user_data.get("task_time")
@@ -1082,7 +1151,7 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         RESERVE = 200
 
         text = f"📋 *{num_days}-Day Plan: {prompt[:40]}*\n"
-        text += f"⏰ {run_time} | 🔄 {interval}\n"
+        text += f"⏰ {run_time} | 🔄 {_format_interval(interval)}\n"
         text += "━" * 25 + "\n\n"
 
         current_phase = None
@@ -1137,12 +1206,9 @@ async def back_to_time_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     query = update.callback_query
     await query.answer()
 
-    keyboard = [
-        [InlineKeyboardButton(_("Daily"), callback_data="Tasks_Interval_daily")],
-        [InlineKeyboardButton(_("Weekly"), callback_data="Tasks_Interval_weekly")],
-        [InlineKeyboardButton(_("🔙 Back"), callback_data="Back_To_Days")],
-    ]
-    await query.edit_message_text(_("Choose interval:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    selected = context.user_data.get("task_selected_days", set())
+    keyboard = _build_days_keyboard(selected)
+    await query.edit_message_text(_("Choose which days to run:"), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_ADD_INTERVAL
 
 @restricted
@@ -1198,7 +1264,7 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = _("Your tasks:\n")
     keyboard = []
     for t in tasks:
-        text += f"ID: {t['id']} | {t['run_time']} | {t['interval']} | {t['prompt'][:20]}...\n"
+        text += f"ID: {t['id']} | {t['run_time']} | {_format_interval(t['interval'])} | {t['prompt'][:20]}...\n"
         keyboard.append([InlineKeyboardButton(_(f"Delete Task #{t['id']}"), callback_data=f"TASK_DELETE#{t['id']}")])
 
     keyboard.append([InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")])
@@ -1225,6 +1291,7 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
     if not _scheduler:
         return
 
+    interval = _normalize_interval(interval)
     hour, minute = map(int, run_time.split(":"))
 
     async def task_wrapper():
@@ -1237,11 +1304,16 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
                 plan = json.loads(plan_json)
                 plan_total = len(plan)
                 start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                if interval == "weekly":
-                    weeks_passed = (datetime.now() - start_dt).days // 7
-                    days_passed = weeks_passed + 1
-                else:
-                    days_passed = (datetime.now() - start_dt).days + 1
+                # Count scheduled runs: how many selected weekdays from start_date to today (inclusive)
+                selected_days = set(interval.split(","))
+                day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+                selected_weekdays = {day_map[d] for d in selected_days if d in day_map}
+                total_calendar_days = (datetime.now() - start_dt).days
+                days_passed = 0
+                for i in range(total_calendar_days + 1):
+                    check_date = start_dt + timedelta(days=i)
+                    if check_date.weekday() in selected_weekdays:
+                        days_passed += 1
 
                 day_item = next((item for item in plan if item['day'] == days_passed), None)
                 if day_item is None and days_passed > len(plan):
@@ -1312,10 +1384,8 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
                 await _application.bot.send_message(chat_id=user_id, text=strip_markdown(part), reply_markup=markup)
 
     job_id = str(task_id)
-    if interval == "daily":
-        _scheduler.add_job(task_wrapper, 'cron', hour=hour, minute=minute, id=job_id, replace_existing=True)
-    elif interval == "weekly":
-        _scheduler.add_job(task_wrapper, 'cron', day_of_week='mon', hour=hour, minute=minute, id=job_id, replace_existing=True)
+    # interval is a comma-separated list of day abbreviations, e.g. "mon,wed,fri"
+    _scheduler.add_job(task_wrapper, 'cron', day_of_week=interval, hour=hour, minute=minute, id=job_id, replace_existing=True)
 
 async def done(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     return await start_over(update, context)
