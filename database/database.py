@@ -288,6 +288,86 @@ async def m014_token_usage(conn):
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_ts ON token_usage(user_id, created_at);")
 
 
+@migration
+async def m015_context_cache(conn):
+    """v15: Create context_cache table for per-user API cache tracking."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS context_cache (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            cache_name TEXT NOT NULL UNIQUE,
+            model_name TEXT,
+            token_count INTEGER DEFAULT 0,
+            expires_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_context_cache_user ON context_cache(user_id);")
+
+
+@migration
+async def m016_knowledge_full_content(conn):
+    """v16: Add full_content column to knowledge_base for caching and RAG."""
+    try:
+        await conn.execute("ALTER TABLE knowledge_base ADD COLUMN full_content TEXT")
+    except Exception:
+        pass  # Column already exists
+
+
+@migration
+async def m017_token_usage_cached(conn):
+    """v17: Add cached_tokens column to token_usage."""
+    try:
+        await conn.execute("ALTER TABLE token_usage ADD COLUMN cached_tokens INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
+
+@migration
+async def m018_thinking_mode(conn):
+    """v18: Add thinking_mode column to users."""
+    try:
+        await conn.execute("ALTER TABLE users ADD COLUMN thinking_mode TEXT DEFAULT 'off'")
+    except Exception:
+        pass
+
+
+@migration
+async def m019_token_usage_thinking(conn):
+    """v19: Add thinking_tokens column to token_usage."""
+    try:
+        await conn.execute("ALTER TABLE token_usage ADD COLUMN thinking_tokens INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
+
+@migration
+async def m020_code_execution(conn):
+    """v20: Add code_execution column to users."""
+    try:
+        await conn.execute("ALTER TABLE users ADD COLUMN code_execution INTEGER DEFAULT 0")
+    except Exception:
+        pass
+
+
+@migration
+async def m021_knowledge_chunks(conn):
+    """v21: Create knowledge_chunks table for RAG embeddings."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS knowledge_chunks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            knowledge_id INTEGER NOT NULL,
+            chunk_index INTEGER NOT NULL,
+            chunk_text TEXT NOT NULL,
+            embedding TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_user ON knowledge_chunks(user_id);")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_knowledge ON knowledge_chunks(knowledge_id);")
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -546,7 +626,9 @@ async def get_task_by_id(pool: DatabasePool, task_id: int):
 async def get_user(pool: DatabasePool, user_id):
     """Retrieve user settings, decrypting the API key."""
     row = await pool.execute_fetch_one(
-        "SELECT user_id, api_key, model_name, grounding, system_instruction, language, pinned_context, briefing_time FROM users WHERE user_id=?",
+        "SELECT user_id, api_key, model_name, grounding, system_instruction, language, "
+        "pinned_context, briefing_time, thinking_mode, code_execution "
+        "FROM users WHERE user_id=?",
         (user_id,),
     )
     if row:
@@ -562,6 +644,8 @@ async def get_user(pool: DatabasePool, user_id):
             "language": row.get("language", "auto"),
             "pinned_context": row.get("pinned_context"),
             "briefing_time": row.get("briefing_time"),
+            "thinking_mode": row.get("thinking_mode", "off"),
+            "code_execution": bool(row.get("code_execution", 0)),
         }
     return None
 
@@ -576,7 +660,7 @@ async def update_user_api_key(pool: DatabasePool, user_id, api_key):
     await pool.execute(sql, (user_id, encrypted_key))
 
 
-async def update_user_settings(pool: DatabasePool, user_id, model_name=None, grounding=None, system_instruction=None, language=None, pinned_context=None, briefing_time=None):
+async def update_user_settings(pool: DatabasePool, user_id, model_name=None, grounding=None, system_instruction=None, language=None, pinned_context=None, briefing_time=None, thinking_mode=None, code_execution=None):
     """Update user settings."""
     updates = []
     params = []
@@ -596,6 +680,12 @@ async def update_user_settings(pool: DatabasePool, user_id, model_name=None, gro
     if pinned_context is not None:
         updates.append("pinned_context=?")
         params.append(pinned_context)
+    if thinking_mode is not None:
+        updates.append("thinking_mode=?")
+        params.append(thinking_mode)
+    if code_execution is not None:
+        updates.append("code_execution=?")
+        params.append(int(code_execution))
     if briefing_time is not None:
         updates.append("briefing_time=?")
         params.append(briefing_time)
@@ -923,36 +1013,127 @@ async def create_conversation_branch(pool: DatabasePool, user_id, source_conv_id
 
 # --- Token Usage Functions ---
 
-async def record_token_usage(pool: DatabasePool, user_id, prompt_tokens, completion_tokens, total_tokens, model_name=None):
-    """Record token usage for a user."""
-    sql = "INSERT INTO token_usage(user_id, prompt_tokens, completion_tokens, total_tokens, model_name) VALUES(?,?,?,?,?)"
-    return await pool.execute_insert(sql, (user_id, prompt_tokens, completion_tokens, total_tokens, model_name))
+async def record_token_usage(pool: DatabasePool, user_id, prompt_tokens, completion_tokens, total_tokens, model_name=None, cached_tokens=0, thinking_tokens=0):
+    """Record token usage for a user, including cached and thinking tokens."""
+    sql = ("INSERT INTO token_usage(user_id, prompt_tokens, completion_tokens, total_tokens, "
+           "model_name, cached_tokens, thinking_tokens) VALUES(?,?,?,?,?,?,?)")
+    return await pool.execute_insert(sql, (user_id, prompt_tokens, completion_tokens, total_tokens, model_name, cached_tokens, thinking_tokens))
 
 
 async def get_user_token_stats(pool: DatabasePool, user_id):
-    """Get aggregated token usage statistics for a user."""
+    """Get aggregated token usage statistics for a user, including cached and thinking tokens."""
     stats = {}
 
     r = await pool.execute_fetch_one(
         "SELECT COALESCE(SUM(prompt_tokens),0) as p, COALESCE(SUM(completion_tokens),0) as c, "
-        "COALESCE(SUM(total_tokens),0) as t, COUNT(*) as n FROM token_usage WHERE user_id=?",
+        "COALESCE(SUM(total_tokens),0) as t, COUNT(*) as n, "
+        "COALESCE(SUM(cached_tokens),0) as cached, COALESCE(SUM(thinking_tokens),0) as thinking "
+        "FROM token_usage WHERE user_id=?",
         (user_id,),
     )
     stats["prompt_tokens"] = r["p"] if r else 0
     stats["completion_tokens"] = r["c"] if r else 0
     stats["total_tokens"] = r["t"] if r else 0
     stats["total_requests"] = r["n"] if r else 0
+    stats["cached_tokens"] = r["cached"] if r else 0
+    stats["thinking_tokens"] = r["thinking"] if r else 0
 
     r = await pool.execute_fetch_one(
-        "SELECT COALESCE(SUM(total_tokens),0) as t FROM token_usage WHERE user_id=? AND DATE(created_at)=DATE('now')",
+        "SELECT COALESCE(SUM(total_tokens),0) as t, COALESCE(SUM(cached_tokens),0) as cached "
+        "FROM token_usage WHERE user_id=? AND DATE(created_at)=DATE('now')",
         (user_id,),
     )
     stats["today_tokens"] = r["t"] if r else 0
+    stats["today_cached"] = r["cached"] if r else 0
 
     r = await pool.execute_fetch_one(
-        "SELECT COALESCE(SUM(total_tokens),0) as t FROM token_usage WHERE user_id=? AND created_at >= DATETIME('now', '-7 days')",
+        "SELECT COALESCE(SUM(total_tokens),0) as t, COALESCE(SUM(cached_tokens),0) as cached "
+        "FROM token_usage WHERE user_id=? AND created_at >= DATETIME('now', '-7 days')",
         (user_id,),
     )
     stats["week_tokens"] = r["t"] if r else 0
+    stats["week_cached"] = r["cached"] if r else 0
 
     return stats
+
+
+# --- Context Cache Functions ---
+
+async def save_cache_record(pool: DatabasePool, user_id, cache_name, model_name, token_count, expires_at):
+    """Save a context cache record."""
+    sql = ("INSERT INTO context_cache(user_id, cache_name, model_name, token_count, expires_at) "
+           "VALUES(?,?,?,?,?)")
+    return await pool.execute_insert(sql, (user_id, cache_name, model_name, token_count, expires_at))
+
+
+async def get_active_cache(pool: DatabasePool, user_id, model_name):
+    """Get an active (non-expired) cache for a user and model."""
+    row = await pool.execute_fetch_one(
+        "SELECT id, cache_name, token_count, expires_at FROM context_cache "
+        "WHERE user_id=? AND model_name=? AND expires_at > DATETIME('now') "
+        "ORDER BY created_at DESC LIMIT 1",
+        (user_id, model_name),
+    )
+    if row:
+        return {"cache_name": row["cache_name"], "token_count": row["token_count"], "expires_at": row["expires_at"]}
+    return None
+
+
+async def delete_cache_record(pool: DatabasePool, cache_name):
+    """Delete a cache record by name."""
+    await pool.execute_delete(
+        "DELETE FROM context_cache WHERE cache_name=?", (cache_name,)
+    )
+
+
+# --- Knowledge Full Content Functions ---
+
+async def add_knowledge_with_content(pool: DatabasePool, user_id, file_name, file_id, content_preview, full_content):
+    """Add a knowledge document with full content for caching/RAG."""
+    sql = ("INSERT INTO knowledge_base(user_id, file_name, file_id, content_preview, full_content) "
+           "VALUES(?,?,?,?,?)")
+    return await pool.execute_insert(sql, (user_id, file_name, file_id, content_preview, full_content))
+
+
+async def get_user_knowledge_full(pool: DatabasePool, user_id):
+    """Retrieve all knowledge documents with full content for a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, file_name, file_id, content_preview, full_content FROM knowledge_base WHERE user_id=?",
+        (user_id,),
+    )
+    return [{"id": r["id"], "file_name": r["file_name"], "file_id": r["file_id"],
+             "content_preview": r["content_preview"], "full_content": r.get("full_content")} for r in rows]
+
+
+# --- Knowledge Chunks / RAG Functions ---
+
+async def save_knowledge_chunks(pool: DatabasePool, user_id, knowledge_id, chunks_with_embeddings):
+    """Save chunked text with embeddings for a knowledge document.
+
+    Args:
+        chunks_with_embeddings: list of (chunk_index, chunk_text, embedding_json)
+    """
+    queries = []
+    for chunk_index, chunk_text, embedding_json in chunks_with_embeddings:
+        sql = ("INSERT INTO knowledge_chunks(user_id, knowledge_id, chunk_index, chunk_text, embedding) "
+               "VALUES(?,?,?,?,?)")
+        queries.append((sql, (user_id, knowledge_id, chunk_index, chunk_text, embedding_json)))
+    if queries:
+        await pool.execute_transaction(queries)
+
+
+async def get_user_chunks_with_embeddings(pool: DatabasePool, user_id):
+    """Get all knowledge chunks with embeddings for a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, knowledge_id, chunk_index, chunk_text, embedding FROM knowledge_chunks WHERE user_id=?",
+        (user_id,),
+    )
+    return [{"id": r["id"], "knowledge_id": r["knowledge_id"], "chunk_index": r["chunk_index"],
+             "chunk_text": r["chunk_text"], "embedding": r["embedding"]} for r in rows]
+
+
+async def delete_chunks_by_knowledge_id(pool: DatabasePool, knowledge_id):
+    """Delete all chunks for a knowledge document."""
+    await pool.execute_delete(
+        "DELETE FROM knowledge_chunks WHERE knowledge_id=?", (knowledge_id,)
+    )

@@ -89,6 +89,9 @@ from bot.conversation_handlers import (
     set_language_handler,
     inline_query_handler,
     weekly_summary_task,
+    # Feature handlers (new SDK features)
+    toggle_thinking_mode,
+    toggle_code_execution,
     # Feature handlers (batch 2)
     templates_menu_handler,
     select_template_handler,
@@ -279,6 +282,8 @@ def states():
             CallbackQueryHandler(open_shortcuts_menu, pattern="^Shortcuts_Menu$"),
             CallbackQueryHandler(open_storage_menu, pattern="^Storage_Menu$"),
             CallbackQueryHandler(toggle_web_search, pattern="^TOGGLE_WEB_SEARCH$"),
+            CallbackQueryHandler(toggle_thinking_mode, pattern="^TOGGLE_THINKING_MODE$"),
+            CallbackQueryHandler(toggle_code_execution, pattern="^TOGGLE_CODE_EXEC$"),
             CallbackQueryHandler(language_menu_handler, pattern="^Language_Menu$"),
             CallbackQueryHandler(briefing_menu_handler, pattern="^Briefing_Menu$"),
             CallbackQueryHandler(url_monitor_menu_handler, pattern="^URL_Monitor_Menu$"),

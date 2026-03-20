@@ -82,7 +82,12 @@ from database.database import (
     create_conversation_branch,
     record_token_usage,
     get_user_token_stats,
+    add_knowledge_with_content,
+    delete_chunks_by_knowledge_id,
+    save_knowledge_chunks,
 )
+from schemas import REMINDER_SCHEMA
+from helpers.code_formatter import format_code_blocks_for_telegram
 from helpers.inline_paginator import InlineKeyboardPaginator
 from helpers.helpers import conversations_page_content, strip_markdown, split_message, escape_markdown_v2
 from helpers.sanitize import safe_filename
@@ -511,8 +516,17 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             if context.user_data.get("web_search"):
                 tools.append("google_search")
 
+            thinking_mode = user_data.get('thinking_mode', 'off') if user_data else 'off'
+            code_exec = user_data.get('code_execution', False) if user_data else False
+
             api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
-            gemini_chat = GeminiChat(api_key, chat_history=history, model_name=model_name, tools=tools, system_instruction=system_instruction, knowledge_base=knowledge, pinned_context=pinned_context, language=user_language)
+            gemini_chat = GeminiChat(
+                api_key, chat_history=history, model_name=model_name, tools=tools,
+                system_instruction=system_instruction, knowledge_base=knowledge,
+                pinned_context=pinned_context, language=user_language,
+                pool=pool, user_id=user_id,
+                thinking_mode=thinking_mode, code_execution=code_exec,
+            )
             await gemini_chat.start_chat()
             context.user_data["gemini_chat"] = gemini_chat
 
@@ -617,6 +631,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
 
         # Try streaming first for text-only messages, fall back to regular
         usage = None
+        grounding_sources = []
         try:
             async def _stream_update(partial):
                 try:
@@ -624,16 +639,37 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
                 except BadRequest:
                     pass
 
-            response_text, usage = await gemini_chat.send_message_streaming(
+            response_text, usage, grounding_sources = await gemini_chat.send_message_streaming(
                 prompt, on_update=_stream_update, image=image, file_path=file_path, file_mime_type=file_mime_type
             )
         except Exception as stream_err:
             logger.warning(f"Streaming failed, falling back to regular: {stream_err}")
-            response_text, usage = await gemini_chat.send_message(prompt, image=image, file_path=file_path, file_mime_type=file_mime_type)
+            response_text, usage, grounding_sources = await gemini_chat.send_message(prompt, image=image, file_path=file_path, file_mime_type=file_mime_type)
 
-        # Record token usage
+        # Record token usage (including cached and thinking tokens)
         if usage:
-            await record_token_usage(pool, user_id, usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"], model_name=gemini_chat.model_name)
+            await record_token_usage(
+                pool, user_id, usage["prompt_tokens"], usage["completion_tokens"],
+                usage["total_tokens"], model_name=gemini_chat.model_name,
+                cached_tokens=usage.get("cached_tokens", 0),
+                thinking_tokens=usage.get("thinking_tokens", 0),
+            )
+
+        # Phase 3: Show thinking indicator if thinking tokens were used
+        thinking_tokens = usage.get("thinking_tokens", 0) if usage else 0
+        if thinking_tokens > 0:
+            response_text = f"_💭 Reasoning ({thinking_tokens:,} tokens)_\n\n{response_text}"
+
+        # Phase 6: Append grounding sources
+        if grounding_sources:
+            seen_uris = set()
+            sources_text = "\n\n*Sources:*"
+            for src in grounding_sources:
+                if src["uri"] not in seen_uris:
+                    seen_uris.add(src["uri"])
+                    title = src.get("title") or src["uri"]
+                    sources_text += f"\n• [{title}]({src['uri']})"
+            response_text += sources_text
 
         # Phase 4.3: Conversation length warning
         history_length = gemini_chat.get_history_length()
@@ -1154,37 +1190,18 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
 
     num_days = context.user_data.get("task_days", 30)
 
-    # Generate Plan
+    # Generate Plan (structured output — returns parsed dict directly)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     msg = await query.edit_message_text(_("Generating plan..."))
     api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
     gemini = GeminiChat(api_key)
-    raw_result = await gemini.generate_plan(prompt, num_days=num_days)
-
-    # Strip markdown fences if present
-    clean = raw_result
-    if clean.startswith("```"):
-        lines = clean.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].startswith("```"):
-            lines = lines[:-1]
-        clean = "\n".join(lines).strip()
+    parsed = await gemini.generate_plan(prompt, num_days=num_days)
 
     context.user_data["task_interval"] = interval
 
     try:
-        parsed = json.loads(clean)
-
-        # Support both formats: {"title": ..., "plan": [...]} and plain [...]
-        if isinstance(parsed, dict) and "plan" in parsed:
-            ai_title = parsed.get("title", "")
-            plan = parsed["plan"]
-        elif isinstance(parsed, list):
-            ai_title = ""
-            plan = parsed
-        else:
-            raise ValueError("Unexpected plan format")
+        ai_title = parsed.get("title", "")
+        plan = parsed.get("plan", [])
 
         if not isinstance(plan, list) or not plan:
             raise ValueError("Plan is not a valid list")
@@ -1207,8 +1224,8 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         except BadRequest:
             await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
         return TASKS_CONFIRM_PLAN
-    except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Failed to parse plan: {e}. Raw: {raw_result[:200]}")
+    except (KeyError, ValueError, AttributeError) as e:
+        logger.error(f"Failed to parse plan: {e}")
         await query.edit_message_text(_("Failed to generate a valid plan. Try again."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Add")]]))
         return TASKS_MENU
 
@@ -1476,7 +1493,12 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
         gemini = GeminiChat(api_key, model_name=model_name, tools=tools)
         response, usage = await gemini.one_shot(target_prompt)
         if usage and pool:
-            await record_token_usage(pool, user_id, usage["prompt_tokens"], usage["completion_tokens"], usage["total_tokens"], model_name=gemini.model_name)
+            await record_token_usage(
+                pool, user_id, usage["prompt_tokens"], usage["completion_tokens"],
+                usage["total_tokens"], model_name=gemini.model_name,
+                cached_tokens=usage.get("cached_tokens", 0),
+                thinking_tokens=usage.get("thinking_tokens", 0),
+            )
         if days_passed and plan_total:
             header = f"📬 *Day {days_passed}/{plan_total}* {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         else:
@@ -1541,12 +1563,23 @@ async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     user_lang = user.get('language', 'auto') if user else 'auto'
 
+    # Thinking mode status
+    thinking_mode = user.get('thinking_mode', 'off') if user else 'off'
+    thinking_labels = {"off": "❌ Off", "light": "💡 Light", "medium": "🧠 Medium", "deep": "🔮 Deep"}
+    thinking_status = thinking_labels.get(thinking_mode, "❌ Off")
+
+    # Code execution status
+    code_exec = user.get('code_execution', False) if user else False
+    code_exec_status = "✅ Enabled" if code_exec else "❌ Disabled"
+
     keyboard = [
         [InlineKeyboardButton(f"🤖 Model: {current_model}", callback_data="open_models_menu")],
         [InlineKeyboardButton(f"🎭 Custom Persona", callback_data="Persona_Menu")],
         [InlineKeyboardButton(f"📌 Pinned Context", callback_data="Pinned_Context_Menu")],
         [InlineKeyboardButton(f"⚡ Quick Shortcuts", callback_data="Shortcuts_Menu")],
         [InlineKeyboardButton(f"🌐 Web Search: {ws_status}", callback_data="TOGGLE_WEB_SEARCH")],
+        [InlineKeyboardButton(f"💭 Thinking: {thinking_status}", callback_data="TOGGLE_THINKING_MODE")],
+        [InlineKeyboardButton(f"🖥️ Code Execution: {code_exec_status}", callback_data="TOGGLE_CODE_EXEC")],
         [InlineKeyboardButton(f"🌍 Language: {user_lang}", callback_data="Language_Menu")],
         [InlineKeyboardButton(_("🔔 Daily Briefing"), callback_data="Briefing_Menu")],
         [InlineKeyboardButton(_("🔗 URL Monitor"), callback_data="URL_Monitor_Menu")],
@@ -1824,20 +1857,21 @@ async def handle_reminder_input(update: Update, context: ContextTypes.DEFAULT_TY
     except (ValueError, IndexError):
         pass
 
-    # Smart NLP parsing with Gemini
+    # Smart NLP parsing with Gemini (structured output)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
         api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
         gemini = GeminiChat(api_key)
         now = datetime.now().strftime("%Y-%m-%d %H:%M")
         parse_prompt = (
-            f"Parse this reminder request into a structured format. Current UTC time is {now}.\n"
+            f"Parse this reminder request into a structured format. Current time is {now}.\n"
             f"Input: \"{text}\"\n"
-            "Return ONLY a JSON object with: 'text' (reminder text), 'datetime' (YYYY-MM-DD HH:MM format), "
-            "'recurring' (null, 'daily', or 'weekly'). No other text or markdown."
+            "Extract the reminder text, datetime, and whether it's recurring."
         )
-        result, _ = await gemini.one_shot(parse_prompt)
-        parsed = json.loads(result.strip().replace("```json", "").replace("```", ""))
+        parsed, _ = await gemini.one_shot_structured(parse_prompt, REMINDER_SCHEMA)
+
+        if not parsed:
+            raise ValueError("Failed to parse structured response")
 
         remind_text = parsed.get('text', text)
         remind_time = parsed.get('datetime')
@@ -1924,8 +1958,34 @@ async def handle_knowledge_input(update: Update, context: ContextTypes.DEFAULT_T
         uploaded_file = await gemini.upload_file(file_path, doc.mime_type)
         preview = await gemini.generate_content_with_file("Summarize this document in 2-3 sentences to be used as context for future queries.", uploaded_file)
 
+        # Read full text content for caching and RAG
+        full_content = None
+        try:
+            full_content = await gemini.generate_content_with_file("Extract and return the full text content of this document verbatim.", uploaded_file)
+        except Exception as extract_err:
+            logger.warning(f"Failed to extract full content, using preview only: {extract_err}")
+
         pool = _get_pool(context)
-        await add_knowledge(pool, (update.effective_user.id, doc.file_name, doc.file_id, preview))
+        user_id = update.effective_user.id
+        knowledge_id = await add_knowledge_with_content(pool, user_id, doc.file_name, doc.file_id, preview, full_content)
+
+        # Phase 5: Create RAG chunks with embeddings
+        if full_content and len(full_content) > 100:
+            try:
+                from helpers.embeddings import chunk_text, embed_texts
+                from config import RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP
+
+                chunks = chunk_text(full_content, chunk_size=RAG_CHUNK_SIZE, overlap=RAG_CHUNK_OVERLAP)
+                embeddings = await embed_texts(gemini.client, chunks)
+
+                chunks_data = []
+                for idx, (chunk, embedding) in enumerate(zip(chunks, embeddings)):
+                    chunks_data.append((idx, chunk, json.dumps(embedding)))
+
+                await save_knowledge_chunks(pool, user_id, knowledge_id, chunks_data)
+                logger.info(f"Created {len(chunks)} RAG chunks for knowledge doc {knowledge_id}")
+            except Exception as rag_err:
+                logger.warning(f"RAG chunk creation failed (non-critical): {rag_err}")
 
         await update.message.reply_text(_("Document added to Knowledge Base!"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to Knowledge Menu"), callback_data="Knowledge_Menu")]]))
     except Exception as e:
@@ -1947,6 +2007,7 @@ async def delete_knowledge_handler(update: Update, context: ContextTypes.DEFAULT
     doc_id = int(query.data.split("#")[1])
 
     pool = _get_pool(context)
+    await delete_chunks_by_knowledge_id(pool, doc_id)
     await delete_knowledge(pool, update.effective_user.id, doc_id)
     await open_knowledge_menu(update, context)
     return KNOWLEDGE_MENU
@@ -2030,6 +2091,56 @@ async def toggle_web_search(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     pool = _get_pool(context)
     await update_user_settings(pool, user_id, grounding=int(new_status))
     context.user_data["web_search"] = new_status
+
+    await open_settings_menu(update, context)
+    return SETTINGS_MENU
+
+
+@restricted
+async def toggle_thinking_mode(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cycle through thinking modes: off → light → medium → deep → off."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    else:
+        return SETTINGS_MENU
+
+    user_id = update.effective_user.id
+    pool = _get_pool(context)
+    user = await get_user(pool, user_id)
+
+    current = user.get('thinking_mode', 'off') if user else 'off'
+    cycle = ["off", "light", "medium", "deep"]
+    next_idx = (cycle.index(current) + 1) % len(cycle) if current in cycle else 0
+    new_mode = cycle[next_idx]
+
+    await update_user_settings(pool, user_id, thinking_mode=new_mode)
+    # Clear active chat so new settings take effect
+    context.user_data["gemini_chat"] = None
+
+    await open_settings_menu(update, context)
+    return SETTINGS_MENU
+
+
+@restricted
+async def toggle_code_execution(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Toggle code execution on/off."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    else:
+        return SETTINGS_MENU
+
+    user_id = update.effective_user.id
+    pool = _get_pool(context)
+    user = await get_user(pool, user_id)
+
+    current = user.get('code_execution', False) if user else False
+    new_status = not current
+
+    await update_user_settings(pool, user_id, code_execution=new_status)
+    # Clear active chat so new settings take effect
+    context.user_data["gemini_chat"] = None
 
     await open_settings_menu(update, context)
     return SETTINGS_MENU
@@ -2349,14 +2460,31 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
     # Per-user token usage from database
     token_stats = await get_user_token_stats(pool, user_id)
     if token_stats and token_stats.get("total_tokens"):
-        text += f"\n\n🔢 *Token Usage*\n"
+        text += f"\n\n🔢 *Token Usage (All Time)*\n"
         text += f"Total: {token_stats['total_tokens']:,} tokens ({token_stats['total_requests']} requests)\n"
         text += f"  Input: {token_stats['prompt_tokens']:,}\n"
         text += f"  Output: {token_stats['completion_tokens']:,}\n"
-        if token_stats.get('today_tokens'):
-            text += f"Today: {token_stats['today_tokens']:,}\n"
-        if token_stats.get('week_tokens'):
-            text += f"Last 7 days: {token_stats['week_tokens']:,}\n"
+
+        # Cached tokens with savings estimate
+        if token_stats.get('cached_tokens'):
+            cached = token_stats['cached_tokens']
+            # Cached tokens cost ~75% less than regular input
+            estimated_savings = cached * 0.75
+            text += f"  💾 Cached: {cached:,} (saved ~{int(estimated_savings):,} equiv. tokens)\n"
+
+        # Thinking tokens
+        if token_stats.get('thinking_tokens'):
+            text += f"  💭 Thinking: {token_stats['thinking_tokens']:,}\n"
+
+        text += f"\n📅 *Today*\n"
+        text += f"  Tokens: {token_stats.get('today_tokens', 0):,}\n"
+        if token_stats.get('today_cached'):
+            text += f"  Cached: {token_stats['today_cached']:,}\n"
+
+        text += f"\n📆 *Last 7 Days*\n"
+        text += f"  Tokens: {token_stats.get('week_tokens', 0):,}\n"
+        if token_stats.get('week_cached'):
+            text += f"  Cached: {token_stats['week_cached']:,}\n"
 
     keyboard = [[InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")]]
 
@@ -3004,7 +3132,7 @@ async def suggest_followup_handler(update: Update, context: ContextTypes.DEFAULT
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        response, _ = await gemini_chat.send_message(
+        response, _, _ = await gemini_chat.send_message(
             "Based on our conversation, suggest exactly 3 brief follow-up questions I could ask. "
             "Format: numbered list, one line each. Keep them short and specific."
         )

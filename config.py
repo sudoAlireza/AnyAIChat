@@ -41,3 +41,13 @@ CONVERSATION_AUTO_RESET_THRESHOLD = int(os.getenv("CONVERSATION_AUTO_RESET_THRES
 
 # Temp file cleanup
 TEMP_FILE_MAX_AGE_HOURS = int(os.getenv("TEMP_FILE_MAX_AGE_HOURS", "1"))
+
+# Context Caching
+CACHE_TTL_SECONDS = int(os.getenv("CACHE_TTL_SECONDS", "3600"))  # 1 hour
+CACHE_MIN_TOKENS = int(os.getenv("CACHE_MIN_TOKENS", "32768"))  # 32K minimum
+
+# Embeddings / RAG
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-004")
+RAG_CHUNK_SIZE = int(os.getenv("RAG_CHUNK_SIZE", "2000"))
+RAG_CHUNK_OVERLAP = int(os.getenv("RAG_CHUNK_OVERLAP", "400"))
+RAG_TOP_K = int(os.getenv("RAG_TOP_K", "5"))
