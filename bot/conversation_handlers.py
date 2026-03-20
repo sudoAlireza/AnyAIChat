@@ -193,6 +193,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user_id = user.id
     username = user.username or user.first_name or "unknown"
     logger.info(f"/start from {username} (id={user_id})")
+
+    # Clear pending task message buttons
+    pending = context.bot_data.get("pending_task_buttons", {})
+    task_btn = pending.pop(user_id, None)
+    if task_btn:
+        try:
+            await context.bot.edit_message_reply_markup(
+                chat_id=task_btn[0], message_id=task_btn[1], reply_markup=None
+            )
+        except BadRequest:
+            pass
+
     pool = _get_pool(context)
     user = await get_user(pool, user_id)
 
@@ -1462,23 +1474,33 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
         else:
             header = f"📬 {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         parts = split_message(header + response)
-        # Build discuss button for the last message part
-        discuss_markup = None
-        if days_passed and plan_total:
-            bot_username = _application.bot_data.get("bot_username", "")
-            if bot_username:
-                discuss_url = f"https://t.me/{bot_username}?start=discuss_{task_id}_{days_passed}"
-                discuss_markup = InlineKeyboardMarkup(
-                    [[InlineKeyboardButton("💬 Discuss", url=discuss_url)]]
-                )
+        # Build buttons for the last message part
+        last_markup = None
+        bot_username = _application.bot_data.get("bot_username", "")
+        buttons = []
+        if days_passed and plan_total and bot_username:
+            discuss_url = f"https://t.me/{bot_username}?start=discuss_{task_id}_{days_passed}"
+            buttons.append(InlineKeyboardButton("💬 Discuss", url=discuss_url))
+        if bot_username:
+            menu_url = f"https://t.me/{bot_username}?start=menu"
+            buttons.append(InlineKeyboardButton("📋 Menu", url=menu_url))
+        if buttons:
+            last_markup = InlineKeyboardMarkup([buttons])
+
+        last_sent = None
         for i, part in enumerate(parts):
             is_last = i == len(parts) - 1
-            markup = discuss_markup if is_last else None
+            markup = last_markup if is_last else None
             try:
-                await _application.bot.send_message(chat_id=user_id, text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+                last_sent = await _application.bot.send_message(chat_id=user_id, text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
             except BadRequest as e:
                 logger.error(f"Failed to send task result with markdown: {e}")
-                await _application.bot.send_message(chat_id=user_id, text=strip_markdown(part), reply_markup=markup)
+                last_sent = await _application.bot.send_message(chat_id=user_id, text=strip_markdown(part), reply_markup=markup)
+
+        # Store message ID so buttons can be cleared when user opens menu
+        if last_sent and last_markup:
+            pending = _application.bot_data.setdefault("pending_task_buttons", {})
+            pending[user_id] = (last_sent.chat_id, last_sent.message_id)
 
     job_id = str(task_id)
     # interval is a comma-separated list of day abbreviations, e.g. "mon,wed,fri"
