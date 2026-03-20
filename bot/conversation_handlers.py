@@ -1868,7 +1868,7 @@ async def handle_reminder_input(update: Update, context: ContextTypes.DEFAULT_TY
             f"Input: \"{text}\"\n"
             "Extract the reminder text, datetime, and whether it's recurring."
         )
-        parsed, _ = await gemini.one_shot_structured(parse_prompt, REMINDER_SCHEMA)
+        parsed, _usage = await gemini.one_shot_structured(parse_prompt, REMINDER_SCHEMA)
 
         if not parsed:
             raise ValueError("Failed to parse structured response")
@@ -2731,7 +2731,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         gemini = GeminiChat(api_key)
-        response, _ = await gemini.one_shot(f"Answer briefly and concisely in 2-3 sentences: {query_text}")
+        response, _usage = await gemini.one_shot(f"Answer briefly and concisely in 2-3 sentences: {query_text}")
 
         description = response[:100] if response else "No response"
         results = [InlineQueryResultArticle(
@@ -3132,7 +3132,7 @@ async def suggest_followup_handler(update: Update, context: ContextTypes.DEFAULT
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
 
     try:
-        response, _, _ = await gemini_chat.send_message(
+        response, _usage, _sources = await gemini_chat.send_message(
             "Based on our conversation, suggest exactly 3 brief follow-up questions I could ask. "
             "Format: numbered list, one line each. Keep them short and specific."
         )
