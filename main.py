@@ -435,6 +435,7 @@ async def post_init(application: Application):
                 interval=task["interval"],
                 plan_json=task["plan_json"],
                 start_date=task["start_date"],
+                hashtag=task.get("hashtag"),
             )
         logger.info(f"Loaded {len(all_tasks)} active tasks.")
     except Exception as e:

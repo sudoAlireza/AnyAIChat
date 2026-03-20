@@ -1,4 +1,5 @@
 import json
+import re
 import logging
 from datetime import datetime
 from database.connection import DatabasePool
@@ -224,6 +225,51 @@ async def m012_briefing_and_resume(conn):
         pass
 
 
+def _generate_hashtag(prompt: str, existing: set = None, task_id: int = None) -> str:
+    """Generate a unique, meaningful hashtag from a task prompt.
+
+    Takes first 2-3 significant words, CamelCases them, and appends
+    a numeric suffix if needed to avoid collisions within `existing`.
+    """
+    # Strip non-alphanumeric, lowercase, split
+    stop_words = {"a", "an", "the", "to", "for", "of", "in", "on", "and", "or", "my", "is", "how", "about", "with", "i", "me"}
+    words = re.sub(r'[^a-zA-Z0-9\s]', '', prompt).lower().split()
+    keywords = [w for w in words if w not in stop_words]
+    if not keywords:
+        keywords = words[:3]  # fallback to raw words
+    # Take up to 3 keywords, capitalize each
+    tag_base = "".join(w.capitalize() for w in keywords[:3])
+    if not tag_base:
+        tag_base = f"Task{task_id or 0}"
+
+    existing = existing or set()
+    tag = f"#{tag_base}"
+    if tag.lower() not in {t.lower() for t in existing}:
+        return tag
+    # Add numeric suffix
+    counter = 2
+    while f"{tag}{counter}".lower() in {t.lower() for t in existing}:
+        counter += 1
+    return f"{tag}{counter}"
+
+
+@migration
+async def m013_task_hashtag(conn):
+    """v13: Add hashtag column to tasks and populate existing rows."""
+    try:
+        await conn.execute("ALTER TABLE tasks ADD COLUMN hashtag TEXT")
+    except Exception:
+        pass  # Column already exists
+    # Generate hashtags for existing tasks that don't have one
+    cursor = await conn.execute("SELECT id, prompt, hashtag FROM tasks WHERE hashtag IS NULL")
+    rows = await cursor.fetchall()
+    existing_tags = set()
+    for row in rows:
+        tag = _generate_hashtag(row[1], existing_tags, task_id=row[0])
+        existing_tags.add(tag)
+        await conn.execute("UPDATE tasks SET hashtag=? WHERE id=?", (tag, row[0]))
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -375,20 +421,19 @@ async def create_task(pool: DatabasePool, task):
     """
     Create a new task.
     :param pool: DatabasePool
-    :param task: (user_id, prompt, run_time, interval, plan_json, start_date)
+    :param task: (user_id, prompt, run_time, interval, plan_json, start_date, hashtag)
     """
-    sql = """ INSERT INTO tasks(user_id, prompt, run_time, interval, plan_json, start_date, status)
-              VALUES(?,?,?,?,?,?,'active') """
+    sql = """ INSERT INTO tasks(user_id, prompt, run_time, interval, plan_json, start_date, status, hashtag)
+              VALUES(?,?,?,?,?,?,'active',?) """
     return await pool.execute_insert(sql, task)
 
 
 async def get_all_tasks(pool: DatabasePool, batch_size: int = 100, offset: int = 0):
     """
     Retrieve active tasks from the database in batches.
-    Skips completed 'once' tasks.
     """
     rows = await pool.execute_fetch_all(
-        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, status "
+        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, status, hashtag "
         "FROM tasks WHERE status='active' LIMIT ? OFFSET ?",
         (batch_size, offset),
     )
@@ -402,6 +447,7 @@ async def get_all_tasks(pool: DatabasePool, batch_size: int = 100, offset: int =
             "plan_json": row["plan_json"],
             "start_date": row["start_date"],
             "status": row["status"],
+            "hashtag": row["hashtag"],
         }
         for row in rows
     ]
@@ -410,7 +456,7 @@ async def get_all_tasks(pool: DatabasePool, batch_size: int = 100, offset: int =
 async def get_user_tasks(pool: DatabasePool, user_id):
     """Retrieve tasks for a specific user."""
     rows = await pool.execute_fetch_all(
-        "SELECT id, prompt, run_time, interval, plan_json, start_date FROM tasks WHERE user_id=? AND status='active'",
+        "SELECT id, prompt, run_time, interval, plan_json, start_date, hashtag FROM tasks WHERE user_id=? AND status='active'",
         (user_id,),
     )
     return [
@@ -421,21 +467,33 @@ async def get_user_tasks(pool: DatabasePool, user_id):
             "interval": row["interval"],
             "plan_json": row["plan_json"],
             "start_date": row["start_date"],
+            "hashtag": row["hashtag"],
         }
         for row in rows
     ]
 
 
-async def delete_task_by_id(pool: DatabasePool, task_specs):
-    """
-    Delete a task by its ID and user ID.
-    :param pool: DatabasePool
-    :param task_specs: (user_id, task_id)
-    """
-    count = await pool.execute_delete(
-        "DELETE FROM tasks WHERE user_id=? AND id=?", task_specs
+async def get_user_task_hashtags(pool: DatabasePool, user_id) -> set:
+    """Get all existing hashtags for a user's tasks."""
+    rows = await pool.execute_fetch_all(
+        "SELECT hashtag FROM tasks WHERE user_id=? AND hashtag IS NOT NULL",
+        (user_id,),
     )
-    return count > 0
+    return {row["hashtag"] for row in rows}
+
+
+async def delete_task_by_hashtag(pool: DatabasePool, user_id: int, hashtag: str):
+    """Delete a task by its hashtag and user ID. Returns the task_id if deleted."""
+    row = await pool.execute_fetch_one(
+        "SELECT id FROM tasks WHERE user_id=? AND hashtag=?", (user_id, hashtag)
+    )
+    if not row:
+        return None
+    task_id = row["id"]
+    await pool.execute_delete(
+        "DELETE FROM tasks WHERE user_id=? AND hashtag=?", (user_id, hashtag)
+    )
+    return task_id
 
 
 async def mark_task_completed(pool: DatabasePool, task_id: int):
@@ -448,7 +506,7 @@ async def mark_task_completed(pool: DatabasePool, task_id: int):
 async def get_task_by_id(pool: DatabasePool, task_id: int):
     """Retrieve a single task by its ID."""
     row = await pool.execute_fetch_one(
-        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date FROM tasks WHERE id=?",
+        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, hashtag FROM tasks WHERE id=?",
         (task_id,),
     )
     if row:
@@ -460,6 +518,7 @@ async def get_task_by_id(pool: DatabasePool, task_id: int):
             "interval": row["interval"],
             "plan_json": row["plan_json"],
             "start_date": row["start_date"],
+            "hashtag": row["hashtag"],
         }
     return None
 

@@ -41,7 +41,6 @@ from database.database import (
     delete_conversation_by_id,
     create_task,
     get_user_tasks,
-    delete_task_by_id,
     get_user,
     update_user_api_key,
     update_user_settings,
@@ -73,6 +72,9 @@ from database.database import (
     add_feedback,
     mark_task_completed,
     get_task_by_id,
+    get_user_task_hashtags,
+    delete_task_by_hashtag,
+    _generate_hashtag,
     add_url_monitor,
     get_user_monitors,
     delete_url_monitor,
@@ -1243,11 +1245,71 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
         start_date = now.strftime("%Y-%m-%d")
 
     pool = _get_pool(context)
-    task_id = await create_task(pool, (user_id, prompt, run_time, interval, plan_json, start_date))
 
-    schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json, start_date)
+    # Generate unique hashtag
+    existing_tags = await get_user_task_hashtags(pool, user_id)
+    hashtag = _generate_hashtag(prompt, existing_tags)
 
-    await query.edit_message_text(_("Task scheduled!"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again")]]))
+    task_id = await create_task(pool, (user_id, prompt, run_time, interval, plan_json, start_date, hashtag))
+
+    schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json, start_date, hashtag)
+
+    # Send the plan as a permanent message (stays in chat)
+    num_days = context.user_data.get("task_days", 30)
+    try:
+        plan = json.loads(plan_json)
+        milestones = {num_days // 4, num_days // 2, 3 * num_days // 4, num_days}
+        total_days = len(plan)
+        TELEGRAM_LIMIT = 4096
+        RESERVE = 100
+
+        plan_text = f"📋 *{num_days}-Day Plan* {hashtag}\n"
+        plan_text += f"📝 _{prompt[:60]}_\n"
+        plan_text += f"⏰ {run_time} UTC | 🔄 {_format_interval(interval)}\n"
+        plan_text += "━" * 25 + "\n\n"
+
+        current_phase = None
+        for day in plan:
+            phase = day.get('phase', '')
+            if phase and phase != current_phase:
+                current_phase = phase
+                phase_line = f"\n📌 *{phase}*\n\n"
+                if len(plan_text) + len(phase_line) + RESERVE > TELEGRAM_LIMIT:
+                    day_num = day.get('day', '?')
+                    remaining = total_days - day_num + 1
+                    plan_text += f"\n_... and {remaining} more days_\n"
+                    break
+                plan_text += phase_line
+
+            day_num = day.get('day', '?')
+            title = day.get('title', '')
+            if day_num in milestones:
+                line = f"  🏁 Day {day_num}: *{title}*\n"
+            else:
+                line = f"  📅 Day {day_num}: *{title}*\n"
+            if len(plan_text) + len(line) + RESERVE > TELEGRAM_LIMIT:
+                remaining = total_days - day_num + 1
+                plan_text += f"\n_... and {remaining} more days_\n"
+                break
+            plan_text += line
+
+        plan_text += "\n" + "━" * 25
+
+        try:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text=plan_text, parse_mode=ParseMode.MARKDOWN,
+            )
+        except BadRequest:
+            await context.bot.send_message(
+                chat_id=update.effective_chat.id, text=strip_markdown(plan_text),
+            )
+    except (json.JSONDecodeError, ValueError):
+        pass  # Plan message is best-effort
+
+    await query.edit_message_text(
+        _("✅ Task scheduled!") + f" {hashtag}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again")]]),
+    )
     return TASKS_MENU
 
 @restricted
@@ -1264,8 +1326,9 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     text = _("Your tasks:\n")
     keyboard = []
     for t in tasks:
-        text += f"ID: {t['id']} | {t['run_time']} | {_format_interval(t['interval'])} | {t['prompt'][:20]}...\n"
-        keyboard.append([InlineKeyboardButton(_(f"Delete Task #{t['id']}"), callback_data=f"TASK_DELETE#{t['id']}")])
+        tag = t.get('hashtag') or f"#Task{t['id']}"
+        text += f"{tag} | {t['run_time']} | {_format_interval(t['interval'])} | {t['prompt'][:20]}...\n"
+        keyboard.append([InlineKeyboardButton(_(f"🗑 Delete {tag}"), callback_data=f"TASK_DELETE#{tag}")])
 
     keyboard.append([InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1275,10 +1338,11 @@ async def list_tasks(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    task_id = int(query.data.split("#")[1])
+    hashtag = query.data.split("#", 1)[1]
 
     pool = _get_pool(context)
-    if await delete_task_by_id(pool, (update.effective_user.id, task_id)):
+    task_id = await delete_task_by_hashtag(pool, update.effective_user.id, hashtag)
+    if task_id:
         if _scheduler:
             try:
                 _scheduler.remove_job(str(task_id))
@@ -1287,11 +1351,12 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
         await query.edit_message_text(_("Task deleted."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to List"), callback_data="Tasks_List")]]))
     return TASKS_MENU
 
-def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=None, start_date=None):
+def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=None, start_date=None, hashtag=None):
     if not _scheduler:
         return
 
     interval = _normalize_interval(interval)
+    task_hashtag = hashtag or f"#Task{task_id}"
     hour, minute = map(int, run_time.split(":"))
 
     async def task_wrapper():
@@ -1327,7 +1392,7 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
                         pass
                     await _application.bot.send_message(
                         chat_id=user_id,
-                        text=f"🎉 *Plan Complete!*\nYour {len(plan)}-day plan on _{prompt[:40]}_ has finished.",
+                        text=f"🎉 *Plan Complete!* {task_hashtag}\nYour {len(plan)}-day plan on _{prompt[:40]}_ has finished.",
                         parse_mode=ParseMode.MARKDOWN,
                     )
                     return
@@ -1361,9 +1426,9 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
         await gemini.async_start_chat()
         response = await gemini.async_send_message(target_prompt)
         if days_passed and plan_total:
-            header = f"📬 *Day {days_passed}/{plan_total} — {prompt[:50]}*\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            header = f"📬 *Day {days_passed}/{plan_total}* {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         else:
-            header = f"📬 *Daily Task: {prompt[:50]}*\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+            header = f"📬 {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         parts = split_message(header + response)
         # Build discuss button for the last message part
         discuss_markup = None
