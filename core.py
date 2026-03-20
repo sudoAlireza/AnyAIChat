@@ -159,6 +159,31 @@ class GeminiChat:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10),
            retry=retry_if_exception_type((ResourceExhausted, ServiceUnavailable)))
+    def one_shot(self, prompt: str) -> str:
+        """Single prompt→response with no chat session overhead."""
+        try:
+            sys_instruction = self._build_system_instruction()
+            model = self._get_model(system_instruction=sys_instruction)
+            response = model.generate_content(prompt)
+            metrics.increment("gemini_messages_sent")
+            return response.text
+        except (ResourceExhausted, ServiceUnavailable):
+            raise
+        except Exception as e:
+            logging.error(f"Failed one_shot: {e}")
+            metrics.increment("gemini_errors")
+            return "Couldn't reach out to Google Gemini. Try Again..."
+
+    async def async_one_shot(self, prompt: str) -> str:
+        """Async wrapper for one_shot."""
+        loop = asyncio.get_event_loop()
+        start_time = time.monotonic()
+        result = await loop.run_in_executor(_executor, lambda: self.one_shot(prompt))
+        metrics.record_latency("gemini_one_shot", time.monotonic() - start_time)
+        return result
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10),
+           retry=retry_if_exception_type((ResourceExhausted, ServiceUnavailable)))
     def send_message(self, message_text: str, image=None, file_path=None, file_mime_type=None) -> str:
         try:
             content = []
@@ -271,7 +296,21 @@ class GeminiChat:
 
     def get_chat_title(self) -> str:
         try:
-            response = self.chat.send_message("Write a one-line short title up to 10 words for this conversation in plain text.")
+            # Use a separate generate_content call to avoid polluting chat history
+            model = self._get_model()
+            # Extract first few user messages as context for the title
+            snippets = []
+            for msg in self.chat.history:
+                if msg.role == "user":
+                    for part in msg.parts:
+                        if hasattr(part, 'text') and part.text:
+                            snippets.append(part.text[:100])
+                            break
+                if len(snippets) >= 3:
+                    break
+            context = "\n".join(snippets) if snippets else "General conversation"
+            prompt = f"Write a one-line short title up to 10 words for a conversation about:\n{context}\n\nReturn only the title in plain text."
+            response = model.generate_content(prompt)
             return response.text.strip()
         except Exception as e:
             logger.warning(f"Failed to get chat title: {e}")
@@ -429,3 +468,31 @@ class GeminiChat:
         """Async wrapper for parse_voice_command."""
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(_executor, lambda: self.parse_voice_command(transcript))
+
+    def parse_voice_command_from_file(self, file_path: str) -> Dict[str, Any]:
+        """Transcribe audio and parse command in a single API call (no chat history pollution)."""
+        instruction = (
+            "Listen to this audio and determine if the user wants to perform an action. "
+            "Actions include: 'start_task' (for 30-day plans), 'set_reminder', 'generate_image', or 'none'. "
+            "Return the result as a JSON object with 'action' and 'parameters' (dict). "
+            "Example for reminder: {'action': 'set_reminder', 'parameters': {'text': 'buy milk', 'time': 'tomorrow 5pm'}} "
+            "Example for task: {'action': 'start_task', 'parameters': {'topic': 'learning python'}} "
+            "Example for image: {'action': 'generate_image', 'parameters': {'prompt': 'a cat in space'}} "
+            "If it's just a normal message or question, return {'action': 'none', 'parameters': {}}."
+        )
+        try:
+            model = self._get_model()
+            with _genai_lock:
+                genai.configure(api_key=self.gemini_token)
+                uploaded_file = genai.upload_file(path=file_path, mime_type="audio/ogg")
+            response = model.generate_content([instruction, uploaded_file])
+            json_str = response.text.strip().replace("```json", "").replace("```", "")
+            return json.loads(json_str)
+        except Exception as e:
+            logger.error(f"Failed to parse voice command from file: {e}")
+            return {"action": "none", "parameters": {}}
+
+    async def async_parse_voice_command_from_file(self, file_path: str) -> Dict[str, Any]:
+        """Async wrapper for parse_voice_command_from_file."""
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(_executor, lambda: self.parse_voice_command_from_file(file_path))

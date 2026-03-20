@@ -537,15 +537,10 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             file_path = safe_filename(voice.file_id, "voice.ogg", prefix="voice")
             await file.download_to_drive(file_path)
 
-            # Voice-to-Action Implementation
+            # Voice-to-Action: parse command from audio without extra API call
             try:
                 await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-                transcription_response = await gemini_chat.async_send_message(
-                    "Please transcribe this audio exactly as it is, without any other text.",
-                    file_path=file_path, file_mime_type="audio/ogg"
-                )
-
-                command = await gemini_chat.async_parse_voice_command(transcription_response)
+                command = await gemini_chat.async_parse_voice_command_from_file(file_path)
                 logger.info(f"Voice Command Parsed: {command}")
 
                 if command.get('action') == 'set_reminder':
@@ -1474,8 +1469,7 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
         tools = ["google_search"] if user and user.get('grounding') else []
 
         gemini = GeminiChat(api_key, model_name=model_name, tools=tools)
-        await gemini.async_start_chat()
-        response = await gemini.async_send_message(target_prompt)
+        response = await gemini.async_one_shot(target_prompt)
         if days_passed and plan_total:
             header = f"📬 *Day {days_passed}/{plan_total}* {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
         else:
@@ -1835,8 +1829,7 @@ async def handle_reminder_input(update: Update, context: ContextTypes.DEFAULT_TY
             "Return ONLY a JSON object with: 'text' (reminder text), 'datetime' (YYYY-MM-DD HH:MM format), "
             "'recurring' (null, 'daily', or 'weekly'). No other text or markdown."
         )
-        await gemini.async_start_chat()
-        result = await gemini.async_send_message(parse_prompt)
+        result = await gemini.async_one_shot(parse_prompt)
         parsed = json.loads(result.strip().replace("```json", "").replace("```", ""))
 
         remind_text = parsed.get('text', text)
@@ -2607,8 +2600,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
 
     try:
         gemini = GeminiChat(api_key)
-        await gemini.async_start_chat()
-        response = await gemini.async_send_message(f"Answer briefly and concisely in 2-3 sentences: {query_text}")
+        response = await gemini.async_one_shot(f"Answer briefly and concisely in 2-3 sentences: {query_text}")
 
         description = response[:100] if response else "No response"
         results = [InlineQueryResultArticle(
