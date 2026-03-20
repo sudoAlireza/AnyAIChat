@@ -338,7 +338,10 @@ class GeminiChat:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10),
            retry=retry_if_exception_type((ResourceExhausted, ServiceUnavailable)))
     def generate_plan(self, prompt: str, num_days: int = 30) -> str:
-        """Fetch a structured N-day plan from Gemini."""
+        """Fetch a structured N-day plan with an AI-generated title from Gemini.
+
+        Returns a JSON string of {"title": "CamelCaseTitle", "plan": [...]}.
+        """
         milestone_days = [num_days // 4, num_days // 2, 3 * num_days // 4, num_days]
         milestones_str = ", ".join(str(d) for d in milestone_days)
         system_instruction = (
@@ -351,11 +354,15 @@ class GeminiChat:
             "- Make titles concise but descriptive (3-6 words)\n"
             "- Make subjects actionable — describe what the user will DO that day, not just a topic name\n"
             f"- Add milestone/review days at day {milestones_str}\n\n"
-            "Return ONLY a JSON list of objects with these fields:\n"
-            f"- 'day': integer 1-{num_days}\n"
-            "- 'title': short title (3-6 words)\n"
-            "- 'subject': one actionable sentence describing the day's activity\n"
-            "- 'phase': which week/phase this belongs to (e.g., 'Week 1: Foundations')\n\n"
+            "Return ONLY a JSON object with these fields:\n"
+            "1. 'title': a short CamelCase name for the entire plan (2-4 words, no spaces, "
+            "e.g. 'PythonMachineLearning', 'GuitarForBeginners', 'DigitalMarketing'). "
+            "This will be used as a hashtag identifier, so keep it concise and descriptive.\n"
+            "2. 'plan': a JSON list of day objects, each with:\n"
+            f"   - 'day': integer 1-{num_days}\n"
+            "   - 'title': short title (3-6 words)\n"
+            "   - 'subject': one actionable sentence describing the day's activity\n"
+            "   - 'phase': which week/phase this belongs to (e.g., 'Week 1: Foundations')\n\n"
             "Do NOT include any markdown formatting like ```json. Return raw JSON only.\n\n"
             "Topic: "
         )
@@ -367,7 +374,7 @@ class GeminiChat:
             raise  # Let tenacity handle retries
         except Exception as e:
             logger.error(f"Failed to generate plan: {e}")
-            return "[]"
+            return '{"title": "Plan", "plan": []}'
 
     async def async_generate_plan(self, prompt: str, num_days: int = 30) -> str:
         """Async wrapper for generate_plan."""

@@ -961,7 +961,7 @@ async def start_add_task(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     await query.answer()
 
     keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")]]
-    await query.edit_message_text(_("Enter task prompt:"), reply_markup=InlineKeyboardMarkup(keyboard))
+    await query.edit_message_text(_("Enter task prompt (max 500 chars):\n\nDescribe the topic and any preferences."), reply_markup=InlineKeyboardMarkup(keyboard))
     return TASKS_ADD_PROMPT
 
 @restricted
@@ -969,10 +969,20 @@ async def handle_task_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE)
     query = update.callback_query
     if query:
         await query.answer()
-        await query.edit_message_text(_("Enter task prompt:"), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")]]))
+        await query.edit_message_text(_("Enter task prompt (max 500 chars):\n\nDescribe the topic and any preferences."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")]]))
         return TASKS_ADD_PROMPT
 
-    context.user_data["task_prompt"] = update.message.text
+    TASK_PROMPT_LIMIT = 500
+    prompt_text = update.message.text.strip()
+    if len(prompt_text) > TASK_PROMPT_LIMIT:
+        await update.message.reply_text(
+            _(f"Prompt is too long ({len(prompt_text)} chars). Maximum is {TASK_PROMPT_LIMIT} characters.\n\n"
+              "Include the topic and key preferences, but keep background concise."),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")]]),
+        )
+        return TASKS_ADD_PROMPT
+
+    context.user_data["task_prompt"] = prompt_text
 
     keyboard = [[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Menu")]]
     await update.message.reply_text(_("How many days should this plan span? (7-60):"), reply_markup=InlineKeyboardMarkup(keyboard))
@@ -1138,22 +1148,50 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
     msg = await query.edit_message_text(_("Generating plan..."))
     api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
     gemini = GeminiChat(api_key)
-    plan_json_str = await gemini.async_generate_plan(prompt, num_days=num_days)
-    context.user_data["task_plan"] = plan_json_str
+    raw_result = await gemini.async_generate_plan(prompt, num_days=num_days)
+
+    # Strip markdown fences if present
+    clean = raw_result
+    if clean.startswith("```"):
+        lines = clean.splitlines()
+        if lines[0].startswith("```"):
+            lines = lines[1:]
+        if lines and lines[-1].startswith("```"):
+            lines = lines[:-1]
+        clean = "\n".join(lines).strip()
+
     context.user_data["task_interval"] = interval
 
     try:
-        plan = json.loads(plan_json_str)
-        if not isinstance(plan, list):
-             raise ValueError("Plan is not a list")
+        parsed = json.loads(clean)
+
+        # Support both formats: {"title": ..., "plan": [...]} and plain [...]
+        if isinstance(parsed, dict) and "plan" in parsed:
+            ai_title = parsed.get("title", "")
+            plan = parsed["plan"]
+        elif isinstance(parsed, list):
+            ai_title = ""
+            plan = parsed
+        else:
+            raise ValueError("Unexpected plan format")
+
+        if not isinstance(plan, list) or not plan:
+            raise ValueError("Plan is not a valid list")
+
+        # Clean title for hashtag: remove non-alphanumeric, ensure CamelCase
+        ai_title = re.sub(r'[^a-zA-Z0-9]', '', ai_title)
+        context.user_data["task_hashtag"] = f"#{ai_title}" if ai_title else ""
+        context.user_data["task_plan"] = json.dumps(plan)
 
         milestones = {num_days // 4, num_days // 2, 3 * num_days // 4, num_days}
         total_days = len(plan)
         TELEGRAM_LIMIT = 4096
         RESERVE = 200
 
-        text = f"📋 *{num_days}-Day Plan: {prompt[:40]}*\n"
-        text += f"⏰ {run_time} | 🔄 {_format_interval(interval)}\n"
+        preview_hashtag = context.user_data.get("task_hashtag", "")
+        text = f"📋 *{num_days}-Day Plan* {preview_hashtag}\n"
+        text += f"📝 _{prompt[:60]}_\n"
+        text += f"⏰ {run_time} UTC | 🔄 {_format_interval(interval)}\n"
         text += "━" * 25 + "\n\n"
 
         current_phase = None
@@ -1199,7 +1237,7 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
             await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
         return TASKS_CONFIRM_PLAN
     except (json.JSONDecodeError, ValueError) as e:
-        logger.error(f"Failed to parse plan: {e}. Plan: {plan_json_str}")
+        logger.error(f"Failed to parse plan: {e}. Raw: {raw_result[:200]}")
         await query.edit_message_text(_("Failed to generate a valid plan. Try again."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Add")]]))
         return TASKS_MENU
 
@@ -1228,14 +1266,6 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
     interval = context.user_data.get("task_interval")
     plan_json = context.user_data.get("task_plan")
 
-    if plan_json.startswith("```"):
-        lines = plan_json.splitlines()
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines[-1].startswith("```"):
-            lines = lines[:-1]
-        plan_json = "\n".join(lines).strip()
-
     now = datetime.now()
     run_hour, run_minute = map(int, run_time.split(":"))
     scheduled_today = now.replace(hour=run_hour, minute=run_minute, second=0, microsecond=0)
@@ -1246,9 +1276,11 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
 
     pool = _get_pool(context)
 
-    # Generate unique hashtag
+    # Use AI-generated hashtag from plan generation, fallback to keyword-based
+    hashtag = context.user_data.get("task_hashtag", "")
     existing_tags = await get_user_task_hashtags(pool, user_id)
-    hashtag = _generate_hashtag(prompt, existing_tags)
+    if not hashtag or hashtag.lower() in {t.lower() for t in existing_tags}:
+        hashtag = _generate_hashtag(prompt, existing_tags)
 
     task_id = await create_task(pool, (user_id, prompt, run_time, interval, plan_json, start_date, hashtag))
 
