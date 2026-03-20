@@ -166,7 +166,6 @@ def restricted(func):
             metrics.increment("rate_limit_hits")
             return
 
-        metrics.increment("messages_processed")
         _current_user_id.set(str(user_id))
         return await func(update, context, *args, **kwargs)
 
@@ -2355,10 +2354,10 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
     if app_metrics:
         summary = app_metrics.get_summary()
         counters = summary.get('counters', {})
-        msg_count = counters.get('messages_processed', 0)
+        msg_count = counters.get('gemini_messages_sent', 0)
         if msg_count:
             text += f"\n\n📈 *Session Stats*\n"
-            text += f"Messages processed: {msg_count}\n"
+            text += f"Messages sent: {msg_count}\n"
             rate_hits = counters.get('rate_limit_hits', 0)
             if rate_hits:
                 text += f"Rate limit hits: {rate_hits}\n"

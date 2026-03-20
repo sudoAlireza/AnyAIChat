@@ -50,7 +50,33 @@ class GeminiChat:
         self.tools = tools if tools else []
         logging.info(f"Initiated new chat model: {self.model_name} with tools: {self.tools}")
 
-    def _get_model(self):
+    def _build_system_instruction(self):
+        """Build system instruction string from user settings."""
+        lang = self.language if self.language and self.language != "auto" else os.getenv("LANGUAGE", "en")
+        lang_instruction = f"Please respond in {lang} language. " if lang != "auto" else "Respond in the same language the user writes in. "
+
+        instruction = (
+            f"{lang_instruction}"
+            "Use standard Markdown formatting only: *bold*, _italic_, `code`, and ```code blocks```. "
+            "Do NOT use headers (#), horizontal rules (---), or complex tables. "
+            "Do NOT escape special characters with backslashes. Just write naturally."
+        )
+
+        if self.system_instruction:
+            instruction += f"\n\nUser-defined persona instructions: {self.system_instruction}"
+
+        if self.pinned_context:
+            instruction += f"\n\nIMPORTANT persistent context from the user (always keep in mind): {self.pinned_context}"
+
+        if self.knowledge_base:
+            instruction += "\n\nYou have access to the following documents from your knowledge base (context preview):"
+            for doc in self.knowledge_base:
+                instruction += f"\n- {doc['file_name']}: {doc['content_preview']}"
+            instruction += "\nUse this information when relevant to answer user queries."
+
+        return instruction
+
+    def _get_model(self, system_instruction: str = None):
         try:
             with _genai_lock:
                 genai.configure(api_key=self.gemini_token)
@@ -63,7 +89,8 @@ class GeminiChat:
                 return genai.GenerativeModel(
                     self.model_name,
                     safety_settings=self.safety_settings,
-                    tools=model_tools if model_tools else None
+                    tools=model_tools if model_tools else None,
+                    system_instruction=system_instruction,
                 )
         except Exception as e:
             logging.error(f"Failed to get model: {e}")
@@ -92,7 +119,9 @@ class GeminiChat:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(min=1, max=10),
            retry=retry_if_exception_type((ResourceExhausted, ServiceUnavailable)))
     def start_chat(self, image=None, file_path=None, file_mime_type=None) -> None:
-        model = self._get_model()
+        # Build system instruction and pass it to the model (no API call, no tokens used)
+        sys_instruction = self._build_system_instruction()
+        model = self._get_model(system_instruction=sys_instruction)
 
         # Prepare initial history, truncated to MAX_HISTORY_MESSAGES pairs
         history = []
@@ -103,32 +132,7 @@ class GeminiChat:
             else:
                 history.extend(self.chat_history)
 
-        lang = self.language if self.language and self.language != "auto" else os.getenv("LANGUAGE", "en")
-        lang_instruction = f"Please respond in {lang} language. " if lang != "auto" else "Respond in the same language the user writes in. "
         self.chat = model.start_chat(history=history)
-
-        # System instructions
-        if not history:
-            base_instruction = (
-                f"{lang_instruction}"
-                "Use standard Markdown formatting only: *bold*, _italic_, `code`, and ```code blocks```. "
-                "Do NOT use headers (#), horizontal rules (---), or complex tables. "
-                "Do NOT escape special characters with backslashes. Just write naturally."
-            )
-
-            if self.system_instruction:
-                base_instruction += f"\n\nUser-defined persona instructions: {self.system_instruction}"
-
-            if self.pinned_context:
-                base_instruction += f"\n\nIMPORTANT persistent context from the user (always keep in mind): {self.pinned_context}"
-
-            if self.knowledge_base:
-                base_instruction += "\n\nYou have access to the following documents from your knowledge base (context preview):"
-                for doc in self.knowledge_base:
-                    base_instruction += f"\n- {doc['file_name']}: {doc['content_preview']}"
-                base_instruction += "\nUse this information when relevant to answer user queries."
-
-            self.chat.send_message(base_instruction)
 
         if image:
             prompt = "Describe this image"
