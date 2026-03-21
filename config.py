@@ -33,7 +33,7 @@ SAFETY_OVERRIDE = os.getenv("SAFETY_OVERRIDE", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 GEMINI_API_TOKEN = os.getenv("GEMINI_API_TOKEN", "")
 LANGUAGE = os.getenv("LANGUAGE", "en")
-LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper()
+LOG_LEVEL = os.getenv("LOG_LEVEL", "INFO").upper() or "INFO"
 
 # Conversation
 CONVERSATION_WARNING_THRESHOLD = int(os.getenv("CONVERSATION_WARNING_THRESHOLD", "500"))
