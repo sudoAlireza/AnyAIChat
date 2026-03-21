@@ -34,7 +34,7 @@ from handlers.states import (
     KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU,
     SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU,
     BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU,
-    URL_MONITOR_MENU, URL_MONITOR_INPUT,
+    URL_MONITOR_MENU, URL_MONITOR_INPUT, MODEL_SEARCH_INPUT,
 )
 from handlers.onboarding import start, handle_api_key, start_over, done
 from handlers.conversation import start_conversation, reply_and_new_message
@@ -54,6 +54,7 @@ from handlers.settings import (
     open_pinned_context_menu, handle_pinned_context_input,
     clear_pinned_context_handler, language_menu_handler, set_language_handler,
     open_provider_menu, set_provider_handler,
+    search_models_prompt, handle_model_search, clear_model_search,
 )
 from handlers.tasks import (
     open_tasks_menu, start_add_task, handle_task_prompt, handle_task_days,
@@ -331,6 +332,14 @@ def states():
         MODELS_MENU: [
             CallbackQueryHandler(set_model_handler, pattern="^SET_MODEL_"),
             CallbackQueryHandler(show_all_models_handler, pattern="^Show_All_Models$"),
+            CallbackQueryHandler(search_models_prompt, pattern="^Search_Models$"),
+            CallbackQueryHandler(clear_model_search, pattern="^Clear_Model_Search$"),
+            CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
+            CallbackQueryHandler(start_over, pattern="^Start_Again"),
+        ],
+        MODEL_SEARCH_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, handle_model_search),
+            CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),
             CallbackQueryHandler(open_settings_menu, pattern="^Settings_Menu$"),
             CallbackQueryHandler(start_over, pattern="^Start_Again"),
         ],

@@ -12,6 +12,7 @@ from handlers.common import restricted, _, _get_pool, get_active_provider_name, 
 from handlers.states import (
     SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT,
     PERSONA_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, PINNED_CONTEXT_INPUT,
+    MODEL_SEARCH_INPUT,
 )
 from config import GEMINI_MODEL
 from database.database import (
@@ -343,11 +344,24 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         # For other providers, show all models
         chat_models = models
 
-    # Split into featured (top 8) and others
-    featured = chat_models[:8]
-    others = chat_models[8:]
+    # Cache models for search
+    context.user_data["_cached_models"] = chat_models
 
-    show_all = context.user_data.get("show_all_models", False)
+    # Check for active search filter
+    search_query = context.user_data.get("_model_search_query")
+    if search_query:
+        filtered = [m for m in chat_models if search_query.lower() in m.id.lower() or search_query.lower() in m.display_name.lower()]
+        display_models = filtered
+        text = f"\U0001f50d *Models matching \"{search_query}\"* ({provider_name.title()})\n\n"
+        if not filtered:
+            text += "No models found. Try a different search.\n"
+    else:
+        # Split into featured (top 8) and others
+        featured = chat_models[:8]
+        others = chat_models[8:]
+        show_all = context.user_data.get("show_all_models", False)
+        display_models = featured if not show_all else featured + others
+        text = f"\U0001f916 *Models ({provider_name.title()})*\n\n"
 
     # Brief description from API or fallback
     desc_map = {
@@ -357,10 +371,7 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         'lite': '\U0001fab6 Lite',
     }
 
-    text = f"\U0001f916 *Models ({provider_name.title()})*\n\n"
     keyboard = []
-
-    display_models = featured if not show_all else featured + others
 
     for m in display_models:
         is_current = m.id.endswith(current_model) or m.id == current_model
@@ -380,10 +391,18 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         keyboard.append([InlineKeyboardButton(button_text, callback_data=f"SET_MODEL_{m.id}")])
 
-    if others and not show_all:
-        keyboard.append([InlineKeyboardButton(f"\U0001f4cb Show all ({len(others)} more)", callback_data="Show_All_Models")])
+    if not search_query:
+        others = chat_models[8:]
+        show_all = context.user_data.get("show_all_models", False)
+        if others and not show_all:
+            keyboard.append([InlineKeyboardButton(f"\U0001f4cb Show all ({len(others)} more)", callback_data="Show_All_Models")])
 
-    keyboard.append([InlineKeyboardButton(_("Back"), callback_data="Settings_Menu")])
+    keyboard.append([InlineKeyboardButton(_("\U0001f50d Search models"), callback_data="Search_Models")])
+
+    if search_query:
+        keyboard.append([InlineKeyboardButton(_("\u274c Clear search"), callback_data="Clear_Model_Search")])
+
+    keyboard.append([InlineKeyboardButton(_("\U0001f519 Back"), callback_data="Settings_Menu")])
 
     try:
         await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
@@ -420,6 +439,93 @@ async def show_all_models_handler(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
     context.user_data["show_all_models"] = True
+    return await open_models_menu(update, context)
+
+
+@restricted
+async def search_models_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Prompt the user to type a model name to search for."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text(
+        _("\U0001f50d Type a model name to search for (e.g. `flash`, `pro`, `gpt-4`, `sonnet`):"),
+        parse_mode=ParseMode.MARKDOWN,
+    )
+    return MODEL_SEARCH_INPUT
+
+
+@restricted
+async def handle_model_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Filter models by user's search query and show results."""
+    search_query = update.message.text.strip()
+    if not search_query:
+        await update.message.reply_text(_("Please enter a search term."))
+        return MODEL_SEARCH_INPUT
+
+    context.user_data["_model_search_query"] = search_query
+    context.user_data["show_all_models"] = False
+
+    # If models are cached, use them; otherwise open_models_menu will fetch fresh
+    cached = context.user_data.get("_cached_models")
+    if cached:
+        current_model = context.user_data.get("model_name") or GEMINI_MODEL
+        provider_name = get_active_provider_name(context)
+        filtered = [m for m in cached if search_query.lower() in m.id.lower() or search_query.lower() in m.display_name.lower()]
+
+        desc_map = {
+            'pro': '\U0001f3c6 Pro',
+            'flash-lite': '\U0001fab6 Lite',
+            'flash': '\u26a1 Flash',
+            'lite': '\U0001fab6 Lite',
+        }
+
+        text = f"\U0001f50d *Models matching \"{search_query}\"* ({provider_name.title()})\n\n"
+        if not filtered:
+            text += "No models found. Try a different search.\n"
+
+        keyboard = []
+        for m in filtered:
+            is_current = m.id.endswith(current_model) or m.id == current_model
+            prefix = "\u2705 " if is_current else ""
+            name_lower = m.id.lower()
+            desc = ""
+            for key, label in desc_map.items():
+                if key in name_lower:
+                    desc = f" \u2014 {label}"
+                    break
+            button_text = f"{prefix}{m.display_name}{desc}"
+            if len(button_text) > 60:
+                button_text = f"{prefix}{m.display_name}"
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"SET_MODEL_{m.id}")])
+
+        keyboard.append([InlineKeyboardButton(_("\U0001f50d Search again"), callback_data="Search_Models")])
+        keyboard.append([InlineKeyboardButton(_("\u274c Clear search"), callback_data="Clear_Model_Search")])
+        keyboard.append([InlineKeyboardButton(_("\U0001f519 Back"), callback_data="Settings_Menu")])
+
+        try:
+            await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+        except BadRequest:
+            from helpers.helpers import strip_markdown
+            await update.message.reply_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+
+        return MODELS_MENU
+
+    # No cache — fall back to full reload via callback simulation
+    # Send a message with the models menu button for the user to tap
+    await update.message.reply_text(
+        _("Searching models..."),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Show results"), callback_data="open_models_menu")]]),
+    )
+    return MODELS_MENU
+
+
+@restricted
+async def clear_model_search(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Clear the model search filter and show the default list."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data.pop("_model_search_query", None)
+    context.user_data["show_all_models"] = False
     return await open_models_menu(update, context)
 
 

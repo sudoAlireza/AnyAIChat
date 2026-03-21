@@ -35,6 +35,7 @@ class State(IntEnum):
     BRIEFING_MENU = auto()
     URL_MONITOR_MENU = auto()
     URL_MONITOR_INPUT = auto()
+    MODEL_SEARCH_INPUT = auto()
 
 
 # Backward-compatible aliases — handlers can import directly
@@ -69,3 +70,4 @@ PROMPT_ADD = State.PROMPT_ADD
 BRIEFING_MENU = State.BRIEFING_MENU
 URL_MONITOR_MENU = State.URL_MONITOR_MENU
 URL_MONITOR_INPUT = State.URL_MONITOR_INPUT
+MODEL_SEARCH_INPUT = State.MODEL_SEARCH_INPUT
