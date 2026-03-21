@@ -328,12 +328,28 @@ class ChatSession:
             return parsed, resp.usage
 
         # Fallback: ask for JSON in the prompt
-        json_prompt = f"{prompt}\n\nRespond with valid JSON matching this schema: {json.dumps(schema)}"
+        json_prompt = (
+            f"{prompt}\n\n"
+            f"You MUST respond with ONLY valid JSON matching this schema (no markdown, no explanation, no code fences):\n"
+            f"{json.dumps(schema)}"
+        )
         resp = await self.one_shot(json_prompt)
         try:
             parsed = json.loads(resp.text)
             return parsed, resp.usage
         except json.JSONDecodeError:
+            # Try to extract JSON from markdown code fences or surrounding text
+            text = resp.text
+            import re as _re
+            json_match = _re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
+            if not json_match:
+                json_match = _re.search(r'(\{[\s\S]*\})', text)
+            if json_match:
+                try:
+                    parsed = json.loads(json_match.group(1))
+                    return parsed, resp.usage
+                except json.JSONDecodeError:
+                    pass
             return None, resp.usage
 
     async def get_chat_title(self) -> str:
@@ -376,10 +392,40 @@ class ChatSession:
         )
         try:
             parsed, _ = await self.one_shot_structured(instruction + prompt, PLAN_SCHEMA)
-            return parsed or {"title": "Plan", "plan": []}
+            if parsed and isinstance(parsed.get("plan"), list) and parsed["plan"]:
+                return parsed
         except Exception as e:
-            logger.error(f"Failed to generate plan: {e}")
-            return {"title": "Plan", "plan": []}
+            logger.warning(f"Plan generation failed with {self.provider_name}/{self.model_name}: {e}")
+
+        # Fallback: use Gemini for structured plan generation if available and not already active
+        if self.provider_name != "gemini":
+            try:
+                from providers.registry import ProviderRegistry
+                gemini = ProviderRegistry().get("gemini")
+                if gemini and self.api_key:
+                    # Try with user's Gemini key if available
+                    from database.database import get_user_api_key
+                    gemini_key = None
+                    if self.pool and self.user_id:
+                        key_row = await get_user_api_key(self.pool, self.user_id, "gemini")
+                        if key_row and key_row.get("api_key"):
+                            gemini_key = key_row["api_key"]
+                    if gemini_key:
+                        logger.info(f"Falling back to Gemini for plan generation")
+                        fallback = ChatSession(
+                            provider_name="gemini",
+                            api_key=gemini_key,
+                            model_name="gemini-2.0-flash",
+                        )
+                        await fallback.start_chat()
+                        parsed, _ = await fallback.one_shot_structured(instruction + prompt, PLAN_SCHEMA)
+                        if parsed and isinstance(parsed.get("plan"), list) and parsed["plan"]:
+                            return parsed
+            except Exception as fb_err:
+                logger.warning(f"Gemini fallback for plan also failed: {fb_err}")
+
+        logger.error(f"All plan generation attempts failed")
+        return {"title": "Plan", "plan": []}
 
     async def generate_image(self, prompt: str) -> Any:
         """Generate an image (delegates to provider if supported)."""

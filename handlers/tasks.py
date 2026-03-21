@@ -1,5 +1,6 @@
 """Task management handlers — extracted from bot/conversation_handlers.py."""
 
+import asyncio
 import re
 import json
 import logging
@@ -328,7 +329,18 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
         return TASKS_CONFIRM_PLAN
     except (KeyError, ValueError, AttributeError) as e:
         logger.error(f"Failed to parse plan: {e}")
-        await query.edit_message_text(_("Failed to generate a valid plan. Try again."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back"), callback_data="Tasks_Add")]]))
+        provider_name = context.user_data.get("active_provider", "gemini")
+        model_name = context.user_data.get("model_name", "unknown")
+        error_text = _(
+            f"Failed to generate a valid plan.\n\n"
+            f"The current model ({model_name}) may not support structured output well. "
+            f"Try switching to a more capable model (e.g. Gemini Flash, GPT-4o, or Claude Sonnet)."
+        )
+        keyboard = [
+            [InlineKeyboardButton(_("🔄 Try Again"), callback_data="Tasks_Add")],
+            [InlineKeyboardButton(_("🔙 Back to Tasks"), callback_data="Tasks_Menu")],
+        ]
+        await query.edit_message_text(error_text, reply_markup=InlineKeyboardMarkup(keyboard))
         return TASKS_MENU
 
 
@@ -548,17 +560,79 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
             user = await get_user(pool, user_id)
         else:
             user = None
-        api_key = user.get('api_key') if user else None
-        model_name = user.get('model_name') if user else None
 
-        chat = ChatSession(
-            provider_name=user.get('active_provider', 'gemini') if user else 'gemini',
-            api_key=api_key, model_name=model_name,
-            web_search=bool(user.get('grounding')) if user else False,
-        )
-        await chat.start_chat()
-        response = await chat.one_shot(target_prompt)
-        # response is a ChatResponse
+        # Load per-provider API key and model
+        provider_name = user.get('active_provider', 'gemini') if user else 'gemini'
+        from database.database import get_user_api_key, get_user_provider_settings
+        api_key = None
+        model_name = None
+        if pool:
+            key_row = await get_user_api_key(pool, user_id, provider_name)
+            if key_row and key_row.get("api_key"):
+                api_key = key_row["api_key"]
+            prov_settings = await get_user_provider_settings(pool, user_id, provider_name)
+            if prov_settings and prov_settings.get("model_name"):
+                model_name = prov_settings["model_name"]
+        # Fallback to legacy fields
+        if not api_key and user:
+            api_key = user.get('api_key')
+        if not model_name and user:
+            model_name = user.get('model_name')
+
+        # Try generating AI response with retries and fallback
+        response = None
+        max_retries = 3
+        retry_delay = 5  # seconds
+
+        for attempt in range(1, max_retries + 1):
+            try:
+                chat = ChatSession(
+                    provider_name=provider_name, api_key=api_key, model_name=model_name,
+                    web_search=bool(user.get('grounding')) if user else False,
+                )
+                await chat.start_chat()
+                response = await chat.one_shot(target_prompt)
+                break  # success
+            except Exception as e:
+                logger.warning(f"Task {task_id} attempt {attempt}/{max_retries} failed ({provider_name}/{model_name}): {e}")
+                if attempt < max_retries:
+                    await asyncio.sleep(retry_delay)
+
+        # Fallback to Gemini if primary provider failed
+        if not response or not response.text:
+            if provider_name != "gemini" and pool:
+                gemini_key_row = await get_user_api_key(pool, user_id, "gemini")
+                gemini_key = gemini_key_row["api_key"] if gemini_key_row and gemini_key_row.get("api_key") else None
+                if not gemini_key and user:
+                    gemini_key = user.get("api_key")
+                if gemini_key:
+                    logger.info(f"Task {task_id}: falling back to Gemini")
+                    try:
+                        chat = ChatSession(
+                            provider_name="gemini", api_key=gemini_key, model_name="gemini-2.0-flash",
+                            web_search=bool(user.get('grounding')) if user else False,
+                        )
+                        await chat.start_chat()
+                        response = await chat.one_shot(target_prompt)
+                    except Exception as fb_err:
+                        logger.error(f"Task {task_id}: Gemini fallback also failed: {fb_err}")
+
+        # If all attempts failed, notify the user
+        if not response or not response.text:
+            logger.error(f"Task {task_id}: all generation attempts failed, notifying user")
+            day_info = f" (Day {days_passed}/{plan_total})" if days_passed and plan_total else ""
+            error_text = (
+                f"⚠️ {task_hashtag}{day_info}\n"
+                f"Failed to generate today's content for _{prompt[:50]}_.\n\n"
+                f"This can happen due to temporary API issues or model limitations. "
+                f"The task will try again at the next scheduled time."
+            )
+            try:
+                await _application.bot.send_message(chat_id=user_id, text=error_text, parse_mode=ParseMode.MARKDOWN)
+            except BadRequest:
+                await _application.bot.send_message(chat_id=user_id, text=strip_markdown(error_text))
+            return
+
         if response.usage and pool:
             await record_token_usage(
                 pool, user_id, response.usage.get("prompt_tokens", 0),
