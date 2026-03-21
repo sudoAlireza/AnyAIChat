@@ -118,7 +118,10 @@ class UserIdFilter(logging.Filter):
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - [user:%(user_id)s] %(message)s", level=LOG_LEVEL
 )
-logging.root.addFilter(UserIdFilter())
+# Add filter to all handlers (not just root logger) so every log record gets user_id
+_uid_filter = UserIdFilter()
+for _handler in logging.root.handlers:
+    _handler.addFilter(_uid_filter)
 logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
