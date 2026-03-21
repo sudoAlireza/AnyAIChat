@@ -467,6 +467,23 @@ async def m028_estimated_cost(conn):
         pass
 
 
+@migration
+async def m029_user_tiers(conn):
+    """v29: Create user_tiers table for future monetization."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_tiers (
+            user_id INTEGER PRIMARY KEY,
+            tier TEXT DEFAULT 'free',
+            tier_expires_at TIMESTAMP,
+            daily_message_limit INTEGER,
+            messages_today INTEGER DEFAULT 0,
+            last_reset_date TEXT,
+            telegram_stars_balance INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -1154,6 +1171,30 @@ async def get_user_token_stats(pool: DatabasePool, user_id):
     stats["week_cached"] = r["cached"] if r else 0
 
     return stats
+
+
+async def get_user_token_stats_by_provider(pool: DatabasePool, user_id):
+    """Get token usage stats broken down by provider."""
+    rows = await pool.execute_fetch_all(
+        "SELECT COALESCE(provider, 'gemini') as provider, "
+        "COALESCE(SUM(prompt_tokens),0) as p, COALESCE(SUM(completion_tokens),0) as c, "
+        "COALESCE(SUM(total_tokens),0) as t, COUNT(*) as n, "
+        "COALESCE(SUM(estimated_cost_usd),0) as cost "
+        "FROM token_usage WHERE user_id=? GROUP BY COALESCE(provider, 'gemini')",
+        (user_id,),
+    )
+    return [{"provider": r["provider"], "prompt_tokens": r["p"], "completion_tokens": r["c"],
+             "total_tokens": r["t"], "requests": r["n"], "estimated_cost": r["cost"]} for r in rows]
+
+
+async def get_user_total_cost(pool: DatabasePool, user_id):
+    """Get total estimated cost for a user."""
+    r = await pool.execute_fetch_one(
+        "SELECT COALESCE(SUM(estimated_cost_usd),0) as total_cost "
+        "FROM token_usage WHERE user_id=?",
+        (user_id,),
+    )
+    return r["total_cost"] if r else 0.0
 
 
 # --- Context Cache Functions ---

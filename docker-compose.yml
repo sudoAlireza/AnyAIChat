@@ -22,6 +22,10 @@ services:
       - RATE_LIMIT_PER_HOUR=${RATE_LIMIT_PER_HOUR:-200}
       - GEMINI_MAX_WORKERS=${GEMINI_MAX_WORKERS:-20}
       - MAX_HISTORY_MESSAGES=${MAX_HISTORY_MESSAGES:-100}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY:-}
+      - GROQ_API_KEY=${GROQ_API_KEY:-}
     volumes:
       - ./data:/usr/src/app/data
     restart: unless-stopped

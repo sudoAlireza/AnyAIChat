@@ -53,6 +53,7 @@ from handlers.settings import (
     start_add_shortcut, handle_shortcut_input, delete_shortcut_handler,
     open_pinned_context_menu, handle_pinned_context_input,
     clear_pinned_context_handler, language_menu_handler, set_language_handler,
+    open_provider_menu, set_provider_handler,
 )
 from handlers.tasks import (
     open_tasks_menu, start_add_task, handle_task_prompt, handle_task_days,
@@ -287,6 +288,8 @@ def states():
         ],
         SETTINGS_MENU: [
             CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),
+            CallbackQueryHandler(open_provider_menu, pattern="^Provider_Menu$"),
+            CallbackQueryHandler(set_provider_handler, pattern="^SET_PROVIDER_"),
             CallbackQueryHandler(open_persona_menu, pattern="^Persona_Menu$"),
             CallbackQueryHandler(open_pinned_context_menu, pattern="^Pinned_Context_Menu$"),
             CallbackQueryHandler(open_shortcuts_menu, pattern="^Shortcuts_Menu$"),

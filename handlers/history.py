@@ -13,7 +13,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from datetime import datetime
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, get_active_provider_name
 from handlers.states import (
     CHOOSING, CONVERSATION, CONVERSATION_HISTORY, SEARCH_INPUT, TAGS_INPUT,
 )
@@ -24,6 +24,7 @@ from database.database import (
     search_conversations, add_conversation_tag, get_user_tags,
     get_conversations_by_tag, get_conversation_tags, remove_conversation_tag,
     get_user_stats, get_user_token_stats,
+    get_user_token_stats_by_provider, get_user_total_cost,
     update_conversation_resume, create_conversation_branch,
 )
 from helpers.helpers import conversations_page_content, strip_markdown, split_message
@@ -595,6 +596,28 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
         text += f"  Tokens: {token_stats.get('week_tokens', 0):,}\n"
         if token_stats.get('week_cached'):
             text += f"  Cached: {token_stats['week_cached']:,}\n"
+
+    # Active provider indicator
+    provider_name = get_active_provider_name(context)
+    text += f"\n\U0001f500 *Active Provider:* {provider_name.title()}\n"
+
+    # Estimated cost
+    total_cost = await get_user_total_cost(pool, user_id)
+    if total_cost:
+        text += f"\n\U0001f4b0 *Estimated Cost*\n"
+        text += f"  Total: ${total_cost:.4f}\n"
+
+    # Per-provider breakdown
+    provider_stats = await get_user_token_stats_by_provider(pool, user_id)
+    if provider_stats:
+        text += f"\n\U0001f4ca *Per-Provider Breakdown*\n"
+        for ps in provider_stats:
+            name = ps["provider"].title()
+            tokens = ps["total_tokens"]
+            reqs = ps["requests"]
+            cost = ps["estimated_cost"]
+            cost_str = f" ~${cost:.3f}" if cost else ""
+            text += f"  {name}: {tokens:,} tokens ({reqs} requests){cost_str}\n"
 
     keyboard = [[InlineKeyboardButton(_("\U0001f519 Back to menu"), callback_data="Start_Again")]]
 

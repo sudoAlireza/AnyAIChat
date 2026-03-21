@@ -35,7 +35,7 @@ from database.database import (
     select_conversation_by_id,
     create_conversation,
     get_user_knowledge,
-    record_token_usage,
+    record_token_usage_with_provider,
 )
 from helpers.helpers import strip_markdown, split_message
 from helpers.sanitize import safe_filename
@@ -292,22 +292,31 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
         grounding_sources = response.sources
 
         # Record token usage (including cached and thinking tokens)
+        provider_name = chat_session.provider_name
         if usage:
-            await record_token_usage(
+            await record_token_usage_with_provider(
                 pool,
                 user_id,
                 usage.get("prompt_tokens", 0),
                 usage.get("completion_tokens", 0),
                 usage.get("total_tokens", 0),
                 model_name=chat_session.model_name,
+                provider=provider_name,
                 cached_tokens=usage.get("cached_tokens", 0),
                 thinking_tokens=usage.get("thinking_tokens", 0),
+                estimated_cost_usd=None,
             )
 
         # Show thinking indicator if thinking tokens were used
         thinking_tokens = usage.get("thinking_tokens", 0) if usage else 0
         if thinking_tokens > 0:
             response_text = f"_\U0001f4ad Reasoning ({thinking_tokens:,} tokens)_\n\n{response_text}"
+
+        # Append provider indicator
+        from chat.formatters import format_usage_summary
+        usage_summary = format_usage_summary(usage, provider=provider_name) if usage else ""
+        if usage_summary:
+            response_text += f"\n\n_{usage_summary}_"
 
         # Append grounding sources
         if grounding_sources:

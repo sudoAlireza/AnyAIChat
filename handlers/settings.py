@@ -17,6 +17,7 @@ from config import GEMINI_MODEL, GEMINI_API_TOKEN
 from database.database import (
     get_user, update_user_settings,
     add_shortcut, get_user_shortcuts, delete_shortcut,
+    get_user_api_key, set_active_provider, get_user_custom_providers,
 )
 from providers.registry import ProviderRegistry
 from providers.base import Capability
@@ -65,6 +66,7 @@ async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = [
         [InlineKeyboardButton(f"\U0001f916 Model: {current_model}", callback_data="open_models_menu")],
+        [InlineKeyboardButton(f"\U0001f504 Provider: {provider_name.title()}", callback_data="Provider_Menu")],
         [InlineKeyboardButton(f"\U0001f3ad Custom Persona", callback_data="Persona_Menu")],
         [InlineKeyboardButton(f"\U0001f4cc Pinned Context", callback_data="Pinned_Context_Menu")],
         [InlineKeyboardButton(f"\u26a1 Quick Shortcuts", callback_data="Shortcuts_Menu")],
@@ -112,17 +114,124 @@ async def update_api_key_handler(update: Update, context: ContextTypes.DEFAULT_T
     user_id = update.effective_user.id
     logger.info(f"Initiating API key update for user {user_id}")
 
-    await query.edit_message_text(_(
-        "\U0001f511 Update API Key\n\n"
-        "How to get your API key:\n"
-        "1. Go to aistudio.google.com\n"
-        "2. Sign in with your Google account\n"
-        "3. Click \"Get API Key\" in the left sidebar\n"
-        "4. Click \"Create API Key\" and copy it\n\n"
-        "Video tutorial: https://youtu.be/RVGbLSVFtIk?t=22\n\n"
-        "Please paste your new API Key below:"
+    provider_name = get_active_provider_name(context)
+
+    # Provider-specific API key instructions
+    provider_instructions = {
+        "gemini": (
+            "\U0001f511 Update API Key (Gemini)\n\n"
+            "How to get your API key:\n"
+            "1. Go to aistudio.google.com\n"
+            "2. Sign in with your Google account\n"
+            "3. Click \"Get API Key\" in the left sidebar\n"
+            "4. Click \"Create API Key\" and copy it\n\n"
+            "Video tutorial: https://youtu.be/RVGbLSVFtIk?t=22\n\n"
+            "Please paste your new API Key below:"
+        ),
+        "openai": (
+            "\U0001f511 Update API Key (OpenAI)\n\n"
+            "How to get your API key:\n"
+            "1. Go to platform.openai.com/api-keys\n"
+            "2. Sign in with your OpenAI account\n"
+            "3. Click \"Create new secret key\"\n"
+            "4. Copy the key (it starts with sk-)\n\n"
+            "Please paste your new API Key below:"
+        ),
+        "anthropic": (
+            "\U0001f511 Update API Key (Anthropic)\n\n"
+            "How to get your API key:\n"
+            "1. Go to console.anthropic.com/settings/keys\n"
+            "2. Sign in with your Anthropic account\n"
+            "3. Click \"Create Key\"\n"
+            "4. Copy the key (it starts with sk-ant-)\n\n"
+            "Please paste your new API Key below:"
+        ),
+    }
+
+    text = provider_instructions.get(provider_name, (
+        f"\U0001f511 Update API Key ({provider_name.title()})\n\n"
+        f"Please paste your API key for {provider_name.title()} below:"
     ))
+
+    await query.edit_message_text(_(text))
     return API_KEY_INPUT
+
+
+# ---------------------------------------------------------------------------
+# Provider Menu
+# ---------------------------------------------------------------------------
+
+@restricted
+async def open_provider_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Show a menu of all available providers."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    else:
+        return SETTINGS_MENU
+
+    user_id = update.effective_user.id
+    pool = _get_pool(context)
+
+    current_provider = get_active_provider_name(context)
+    registry = ProviderRegistry()
+    registered_names = registry.list_providers()
+
+    # Also fetch user's custom providers
+    custom_providers = await get_user_custom_providers(pool, user_id)
+    custom_names = {cp["name"] for cp in custom_providers}
+
+    # Merge: registered providers + any custom providers not already registered
+    all_provider_names = list(registered_names)
+    for cp in custom_providers:
+        if cp["name"] not in all_provider_names:
+            all_provider_names.append(cp["name"])
+
+    keyboard = []
+    for name in all_provider_names:
+        prefix = "\u2705 " if name == current_provider else ""
+        # Use display name from registry if available, otherwise from custom providers
+        provider_obj = registry.get(name)
+        if provider_obj:
+            display = name.title()
+        elif name in custom_names:
+            cp = next(c for c in custom_providers if c["name"] == name)
+            display = cp.get("display_name") or name.title()
+        else:
+            display = name.title()
+        keyboard.append([InlineKeyboardButton(f"{prefix}{display}", callback_data=f"SET_PROVIDER_{name}")])
+
+    keyboard.append([InlineKeyboardButton(_("\U0001f519 Back to Settings"), callback_data="Settings_Menu")])
+
+    await query.edit_message_text(
+        _("\U0001f504 Select your AI provider:"),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return SETTINGS_MENU
+
+
+@restricted
+async def set_provider_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Switch the user's active provider."""
+    query = update.callback_query
+    if query:
+        await query.answer()
+    else:
+        return SETTINGS_MENU
+
+    provider_name = query.data.replace("SET_PROVIDER_", "")
+    user_id = update.effective_user.id
+    logger.info(f"Switching provider to {provider_name} for user {user_id}")
+
+    pool = _get_pool(context)
+    await set_active_provider(pool, user_id, provider_name)
+    context.user_data["active_provider"] = provider_name
+
+    # Clear chat session so the new provider is used
+    context.user_data["chat_session"] = None
+
+    await open_settings_menu(update, context)
+    return SETTINGS_MENU
 
 
 # ---------------------------------------------------------------------------

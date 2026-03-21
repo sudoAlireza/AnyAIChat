@@ -20,11 +20,13 @@ def format_sources(sources: list[dict]) -> str:
     return "\n".join(lines) if len(lines) > 1 else ""
 
 
-def format_usage_summary(usage: dict) -> str:
-    """Format token usage for display."""
+def format_usage_summary(usage: dict, provider: str | None = None) -> str:
+    """Format token usage for display, optionally including the provider name."""
     if not usage:
         return ""
     parts = []
+    if provider:
+        parts.append(f"Provider: {provider}")
     if usage.get("total_tokens"):
         parts.append(f"Tokens: {usage['total_tokens']:,}")
     if usage.get("cached_tokens"):
