@@ -202,7 +202,7 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
         chat_models = []
         for m in models:
-            name_lower = m['name'].lower()
+            name_lower = m.id.lower()
             if any(s in name_lower for s in skip_patterns):
                 continue
             if not name_lower.startswith('models/gemini'):
@@ -210,7 +210,7 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
             chat_models.append(m)
 
         # Sort all chat models: latest version first, then pro > flash > lite
-        chat_models.sort(key=lambda m: _parse_model_version(m['name'].lower()), reverse=True)
+        chat_models.sort(key=lambda m: _parse_model_version(m.id.lower()), reverse=True)
     else:
         # For other providers, show all models
         chat_models = models
@@ -235,26 +235,22 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     display_models = featured if not show_all else featured + others
 
     for m in display_models:
-        is_current = m['name'].endswith(current_model) or m['name'] == current_model
+        is_current = m.id.endswith(current_model) or m.id == current_model
         prefix = "\u2705 " if is_current else ""
 
         # Generate short description
-        name_lower = m['name'].lower()
+        name_lower = m.id.lower()
         desc = ""
         for key, label in desc_map.items():
             if key in name_lower:
                 desc = f" \u2014 {label}"
                 break
-        if m.get('description'):
-            short_desc = m['description'][:60]
-            if not desc:
-                desc = f" \u2014 {short_desc}"
 
-        button_text = f"{prefix}{m['display_name']}{desc}"
+        button_text = f"{prefix}{m.display_name}{desc}"
         if len(button_text) > 60:
-            button_text = f"{prefix}{m['display_name']}"
+            button_text = f"{prefix}{m.display_name}"
 
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"SET_MODEL_{m['name']}")])
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"SET_MODEL_{m.id}")])
 
     if others and not show_all:
         keyboard.append([InlineKeyboardButton(f"\U0001f4cb Show all ({len(others)} more)", callback_data="Show_All_Models")])
