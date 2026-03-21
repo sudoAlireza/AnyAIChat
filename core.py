@@ -70,9 +70,9 @@ class GeminiChat:
 
         instruction = (
             f"{lang_instruction}"
-            "Use standard Markdown formatting only: *bold*, _italic_, `code`, and ```code blocks```. "
-            "Do NOT use headers (#), horizontal rules (---), or complex tables. "
-            "Do NOT escape special characters with backslashes. Just write naturally."
+            "Format text using only bold (wrap with single asterisks), italic (wrap with underscores), inline code (wrap with backticks), and code blocks (wrap with triple backticks). "
+            "Do NOT use headers, horizontal rules, or complex tables. "
+            "Do NOT escape special characters with backslashes. Do NOT demonstrate or showcase formatting at the end of your response. Just write naturally."
         )
 
         if self.system_instruction:

@@ -1274,26 +1274,25 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
 
     schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json, start_date, hashtag)
 
-    # Send the plan as a permanent message (stays in chat)
+    # Edit the approval message into the plan (keeps it in its original position above)
     num_days = context.user_data.get("task_days", 30)
     try:
         plan = json.loads(plan_json)
         plan_text = _build_plan_text(plan, prompt, run_time, interval, hashtag, num_days)
         try:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id, text=plan_text, parse_mode=ParseMode.MARKDOWN,
-            )
+            await query.edit_message_text(plan_text, parse_mode=ParseMode.MARKDOWN)
         except BadRequest:
-            await context.bot.send_message(
-                chat_id=update.effective_chat.id, text=strip_markdown(plan_text),
-            )
+            await query.edit_message_text(strip_markdown(plan_text))
     except (json.JSONDecodeError, ValueError):
-        pass  # Plan message is best-effort
+        await query.edit_message_text(f"{hashtag}")
 
-    await query.edit_message_text(
-        _("✅ Task scheduled!") + f" {hashtag}",
+    # Send the confirmation as a new message below the plan
+    await context.bot.send_message(
+        chat_id=update.effective_chat.id,
+        text=_("✅ Task scheduled!") + f" {hashtag}",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("Back to menu"), callback_data="Start_Again")]]),
     )
+
     return TASKS_MENU
 
 def _build_plan_text(plan, prompt, run_time, interval, hashtag, num_days=None):
