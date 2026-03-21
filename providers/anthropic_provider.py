@@ -51,6 +51,7 @@ class AnthropicProvider:
     """Anthropic provider: Claude models with vision, extended thinking, structured output."""
 
     provider_name: str = "anthropic"
+    default_model: str = "claude-sonnet-4-20250514"
     capabilities: Capability = (
         Capability.TEXT_CHAT
         | Capability.STREAMING

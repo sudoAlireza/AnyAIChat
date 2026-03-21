@@ -65,6 +65,7 @@ KNOWN_ENDPOINTS = {
 class OpenAICompatProvider:
     """Generic OpenAI-compatible provider for third-party endpoints."""
 
+    default_model: str = ""
     capabilities: Capability = (
         Capability.TEXT_CHAT
         | Capability.STREAMING

@@ -231,9 +231,20 @@ async def set_provider_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"Switching provider to {provider_name} for user {user_id}")
 
     pool = _get_pool(context)
+    provider = ProviderRegistry().get(provider_name)
+
+    # Restore the user's saved model for this provider, or fall back to provider default
+    from database.database import get_user_api_key, get_user_provider_settings
+    saved = await get_user_provider_settings(pool, user_id, provider_name)
+    if saved and saved.get("model_name"):
+        model_name = saved["model_name"]
+    else:
+        model_name = getattr(provider, "default_model", None) if provider else None
+    if model_name:
+        await update_user_settings(pool, user_id, model_name=model_name)
+        context.user_data["model_name"] = model_name
 
     # Check if user has a saved key for this provider
-    from database.database import get_user_api_key
     provider_key = await get_user_api_key(pool, user_id, provider_name)
     if not provider_key or not provider_key.get("api_key"):
         # No key saved — switch provider and redirect to API key input
@@ -426,7 +437,13 @@ async def set_model_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     logger.info(f"Setting model to {model_name} for user {user_id}")
 
     pool = _get_pool(context)
+    provider_name = get_active_provider_name(context)
+
+    # Save to legacy users table (for backward compat)
     await update_user_settings(pool, user_id, model_name=model_name)
+    # Save per-provider so switching back restores this choice
+    from database.database import set_user_provider_settings
+    await set_user_provider_settings(pool, user_id, provider_name, model_name=model_name)
     context.user_data["model_name"] = model_name
 
     await open_models_menu(update, context)

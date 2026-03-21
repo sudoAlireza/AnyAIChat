@@ -76,10 +76,18 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
 
     # Sync context with DB settings
     context.user_data["api_key"] = user["api_key"]
-    context.user_data["model_name"] = user["model_name"]
     context.user_data["web_search"] = bool(user["grounding"])
     context.user_data["system_instruction"] = user.get("system_instruction")
-    context.user_data["active_provider"] = user.get("active_provider", "gemini")
+    active_provider = user.get("active_provider", "gemini")
+    context.user_data["active_provider"] = active_provider
+
+    # Load per-provider model, falling back to legacy users.model_name
+    from database.database import get_user_provider_settings
+    provider_settings = await get_user_provider_settings(pool, user_id, active_provider)
+    if provider_settings and provider_settings.get("model_name"):
+        context.user_data["model_name"] = provider_settings["model_name"]
+    else:
+        context.user_data["model_name"] = user["model_name"]
 
     # Handle deep-link: /start discuss_{task_id}_{day_num}
     if context.args and context.args[0].startswith("discuss_"):
@@ -322,10 +330,18 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     user = await get_user(pool, user_id)
     if user:
         context.user_data["api_key"] = user["api_key"]
-        context.user_data["model_name"] = user["model_name"]
         context.user_data["web_search"] = bool(user["grounding"])
         context.user_data["system_instruction"] = user.get("system_instruction")
-        context.user_data["active_provider"] = user.get("active_provider", "gemini")
+        active_provider = user.get("active_provider", "gemini")
+        context.user_data["active_provider"] = active_provider
+
+        # Load per-provider model
+        from database.database import get_user_provider_settings
+        provider_settings = await get_user_provider_settings(pool, user_id, active_provider)
+        if provider_settings and provider_settings.get("model_name"):
+            context.user_data["model_name"] = provider_settings["model_name"]
+        else:
+            context.user_data["model_name"] = user["model_name"]
 
     # AI response buttons (_CONV): always send menu as new message to preserve the response.
     # Menu buttons: edit the current menu message as normal navigation.

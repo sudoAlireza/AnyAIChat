@@ -72,6 +72,7 @@ class GeminiProvider:
     """Google Gemini provider implementing AIProvider + optional extension protocols."""
 
     provider_name: str = "gemini"
+    default_model: str = "gemini-2.0-flash"
     capabilities: Capability = (
         Capability.TEXT_CHAT
         | Capability.STREAMING

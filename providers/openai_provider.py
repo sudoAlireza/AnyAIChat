@@ -49,6 +49,7 @@ class OpenAIProvider:
     """OpenAI provider: GPT-4o, o3, DALL-E, structured output, web search."""
 
     provider_name: str = "openai"
+    default_model: str = "gpt-4o"
     capabilities: Capability = (
         Capability.TEXT_CHAT
         | Capability.STREAMING
