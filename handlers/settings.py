@@ -384,7 +384,10 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
 
     keyboard = []
 
-    for m in display_models:
+    # Map index → model id to keep callback_data under Telegram's 64-byte limit
+    model_index_map = {}
+    for idx, m in enumerate(display_models):
+        model_index_map[idx] = m.id
         is_current = m.id.endswith(current_model) or m.id == current_model
         prefix = "\u2705 " if is_current else ""
 
@@ -400,7 +403,9 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
         if len(button_text) > 60:
             button_text = f"{prefix}{m.display_name}"
 
-        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"SET_MODEL_{m.id}")])
+        keyboard.append([InlineKeyboardButton(button_text, callback_data=f"SM_{idx}")])
+
+    context.user_data["_model_index_map"] = model_index_map
 
     if not search_query:
         others = chat_models[8:]
@@ -432,7 +437,19 @@ async def set_model_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     else:
         return MODELS_MENU
 
-    model_name = query.data.replace("SET_MODEL_", "")
+    # Resolve model id from index map
+    model_index_map = context.user_data.get("_model_index_map", {})
+    raw = query.data
+    if raw.startswith("SM_"):
+        idx = int(raw.replace("SM_", ""))
+        model_name = model_index_map.get(idx)
+        if not model_name:
+            await query.edit_message_text(_("Model not found. Please try again."))
+            return MODELS_MENU
+    else:
+        # Legacy fallback
+        model_name = raw.replace("SET_MODEL_", "")
+
     user_id = update.effective_user.id
     logger.info(f"Setting model to {model_name} for user {user_id}")
 
@@ -501,7 +518,9 @@ async def handle_model_search(update: Update, context: ContextTypes.DEFAULT_TYPE
             text += "No models found. Try a different search.\n"
 
         keyboard = []
-        for m in filtered:
+        model_index_map = {}
+        for idx, m in enumerate(filtered):
+            model_index_map[idx] = m.id
             is_current = m.id.endswith(current_model) or m.id == current_model
             prefix = "\u2705 " if is_current else ""
             name_lower = m.id.lower()
@@ -513,7 +532,8 @@ async def handle_model_search(update: Update, context: ContextTypes.DEFAULT_TYPE
             button_text = f"{prefix}{m.display_name}{desc}"
             if len(button_text) > 60:
                 button_text = f"{prefix}{m.display_name}"
-            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"SET_MODEL_{m.id}")])
+            keyboard.append([InlineKeyboardButton(button_text, callback_data=f"SM_{idx}")])
+        context.user_data["_model_index_map"] = model_index_map
 
         keyboard.append([InlineKeyboardButton(_("\U0001f50d Search again"), callback_data="Search_Models")])
         keyboard.append([InlineKeyboardButton(_("\u274c Clear search"), callback_data="Clear_Model_Search")])

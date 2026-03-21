@@ -330,7 +330,7 @@ def states():
             CallbackQueryHandler(open_knowledge_menu, pattern="^Knowledge_Menu$"),
         ],
         MODELS_MENU: [
-            CallbackQueryHandler(set_model_handler, pattern="^SET_MODEL_"),
+            CallbackQueryHandler(set_model_handler, pattern="^SM_"),
             CallbackQueryHandler(show_all_models_handler, pattern="^Show_All_Models$"),
             CallbackQueryHandler(search_models_prompt, pattern="^Search_Models$"),
             CallbackQueryHandler(clear_model_search, pattern="^Clear_Model_Search$"),
