@@ -109,11 +109,10 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
                     history = json.loads(conv_data["history"])
 
             user_data = await get_user(pool, user_id)
-            model_name = (
-                user_data.get("model_name")
-                if user_data
-                else context.user_data.get("model_name")
-            )
+
+            # Provider and model are already hydrated in context by the @restricted decorator
+            provider_name = context.user_data.get("active_provider", "gemini")
+            model_name = context.user_data.get("model_name") or (user_data.get("model_name") if user_data else None)
             system_instruction = (
                 user_data.get("system_instruction")
                 if user_data
@@ -127,7 +126,6 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             code_exec = user_data.get("code_execution", False) if user_data else False
 
             api_key = await get_api_key(context, user_id)
-            provider_name = context.user_data.get("active_provider", "gemini")
 
             chat_session = ChatSession(
                 provider_name=provider_name,

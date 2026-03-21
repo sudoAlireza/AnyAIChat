@@ -69,6 +69,28 @@ def restricted(func):
             return
 
         _current_user_id.set(str(user_id))
+
+        # Hydrate user context from DB if not cached (e.g. after bot restart)
+        if "active_provider" not in context.user_data:
+            try:
+                from database.database import get_user, get_user_provider_settings
+                pool = _get_pool(context)
+                user = await get_user(pool, user_id)
+                if user:
+                    active_provider = user.get("active_provider") or "gemini"
+                    context.user_data["active_provider"] = active_provider
+                    context.user_data.setdefault("api_key", user.get("api_key"))
+                    context.user_data.setdefault("web_search", bool(user.get("grounding")))
+                    context.user_data.setdefault("system_instruction", user.get("system_instruction"))
+                    # Load per-provider model
+                    prov_settings = await get_user_provider_settings(pool, user_id, active_provider)
+                    if prov_settings and prov_settings.get("model_name"):
+                        context.user_data["model_name"] = prov_settings["model_name"]
+                    else:
+                        context.user_data.setdefault("model_name", user.get("model_name"))
+            except Exception:
+                pass
+
         return await func(update, context, *args, **kwargs)
 
     return wrapped
