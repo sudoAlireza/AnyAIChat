@@ -743,7 +743,7 @@ async def get_user(pool: DatabasePool, user_id):
     """Retrieve user settings, decrypting the API key."""
     row = await pool.execute_fetch_one(
         "SELECT user_id, api_key, model_name, grounding, system_instruction, language, "
-        "pinned_context, briefing_time, thinking_mode, code_execution "
+        "pinned_context, briefing_time, thinking_mode, code_execution, active_provider "
         "FROM users WHERE user_id=?",
         (user_id,),
     )
