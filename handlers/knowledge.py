@@ -62,13 +62,13 @@ async def handle_knowledge_input(update: Update, context: ContextTypes.DEFAULT_T
     await file.download_to_drive(file_path)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
+    user_id = update.effective_user.id
     api_key = await get_api_key(context, user_id)
     model_name = context.user_data.get("model_name")
     provider_name = context.user_data.get("active_provider", "gemini")
 
     try:
         pool = _get_pool(context)
-        user_id = update.effective_user.id
 
         # File upload and processing is Gemini-specific for now
         if provider_name == "gemini":

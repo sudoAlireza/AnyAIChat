@@ -181,6 +181,11 @@ async def open_provider_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     custom_providers = await get_user_custom_providers(pool, user_id)
     custom_names = {cp["name"] for cp in custom_providers}
 
+    # Get providers with saved keys
+    from database.database import get_user_providers
+    user_providers = await get_user_providers(pool, user_id)
+    providers_with_key = {p["provider"] for p in user_providers}
+
     # Merge: registered providers + any custom providers not already registered
     all_provider_names = list(registered_names)
     for cp in custom_providers:
@@ -189,7 +194,8 @@ async def open_provider_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = []
     for name in all_provider_names:
-        prefix = "\u2705 " if name == current_provider else ""
+        active = "\u2705 " if name == current_provider else ""
+        has_key = "\U0001f511" if name in providers_with_key else "\U0001f512"
         # Use display name from registry if available, otherwise from custom providers
         provider_obj = registry.get(name)
         if provider_obj:
@@ -199,7 +205,7 @@ async def open_provider_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
             display = cp.get("display_name") or name.title()
         else:
             display = name.title()
-        keyboard.append([InlineKeyboardButton(f"{prefix}{display}", callback_data=f"SET_PROVIDER_{name}")])
+        keyboard.append([InlineKeyboardButton(f"{active}{has_key} {display}", callback_data=f"SET_PROVIDER_{name}")])
 
     keyboard.append([InlineKeyboardButton(_("\U0001f519 Back to Settings"), callback_data="Settings_Menu")])
 
@@ -224,11 +230,24 @@ async def set_provider_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     logger.info(f"Switching provider to {provider_name} for user {user_id}")
 
     pool = _get_pool(context)
+
+    # Check if user has a saved key for this provider
+    from database.database import get_user_api_key
+    provider_key = await get_user_api_key(pool, user_id, provider_name)
+    if not provider_key or not provider_key.get("api_key"):
+        # No key saved — switch provider and redirect to API key input
+        await set_active_provider(pool, user_id, provider_name)
+        context.user_data["active_provider"] = provider_name
+        context.user_data["chat_session"] = None
+        context.user_data.pop("api_key", None)
+        return await update_api_key_handler(update, context)
+
     await set_active_provider(pool, user_id, provider_name)
     context.user_data["active_provider"] = provider_name
 
-    # Clear chat session so the new provider is used
+    # Clear chat session and generic API key cache so the new provider's key is loaded fresh
     context.user_data["chat_session"] = None
+    context.user_data.pop("api_key", None)
 
     await open_settings_menu(update, context)
     return SETTINGS_MENU

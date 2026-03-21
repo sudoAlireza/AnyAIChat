@@ -234,10 +234,21 @@ async def handle_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
         return API_KEY_INPUT
 
     pool = _get_pool(context)
-    await update_user_api_key(pool, user_id, api_key)
+
+    # Save to per-provider user_api_keys table
+    from database.database import set_user_api_key
+    await set_user_api_key(pool, user_id, provider_name, api_key)
+
+    # Also update legacy users table for Gemini (backward compat)
+    if provider_name == "gemini":
+        await update_user_api_key(pool, user_id, api_key)
+
+    # Cache in context (per-provider + generic)
+    context.user_data["api_key"] = api_key
+    context.user_data[f"api_key_{provider_name}"] = api_key
 
     await update.message.reply_text(_(
-        "API Key saved successfully! Now you can start using the bot."
+        f"API Key for {provider_name.title()} saved successfully!"
     ))
     return await start(update, context)
 

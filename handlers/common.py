@@ -109,19 +109,41 @@ def get_active_provider_name(context: ContextTypes.DEFAULT_TYPE) -> str:
 
 
 async def get_api_key(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
-    """Get the user's API key, loading from DB if not cached in context."""
-    cached = context.user_data.get("api_key")
+    """Get the user's API key for the active provider.
+
+    Lookup order:
+    1. context.user_data cache (keyed by provider)
+    2. user_api_keys table (per-provider)
+    3. Legacy users.api_key column (Gemini only)
+    4. GEMINI_API_TOKEN env var (last resort)
+    """
+    from database.database import get_user_api_key, get_user
+
+    provider = context.user_data.get("active_provider", "gemini")
+    cache_key = f"api_key_{provider}"
+
+    # 1. Check per-provider cache
+    cached = context.user_data.get(cache_key)
     if cached:
         return cached
 
-    # Fall back to DB lookup
-    from database.database import get_user
     pool = _get_pool(context)
+
+    # 2. Per-provider key from user_api_keys table
+    provider_key = await get_user_api_key(pool, user_id, provider)
+    if provider_key and provider_key.get("api_key"):
+        context.user_data[cache_key] = provider_key["api_key"]
+        # Also set generic api_key for backward compat
+        context.user_data["api_key"] = provider_key["api_key"]
+        return provider_key["api_key"]
+
+    # 3. Legacy key from users table (works for gemini)
     user = await get_user(pool, user_id)
     if user and user.get("api_key"):
+        context.user_data[cache_key] = user["api_key"]
         context.user_data["api_key"] = user["api_key"]
         return user["api_key"]
 
-    # Last resort: env var
+    # 4. Env var fallback
     from config import GEMINI_API_TOKEN
     return GEMINI_API_TOKEN
