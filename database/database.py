@@ -762,6 +762,7 @@ async def get_user(pool: DatabasePool, user_id):
             "briefing_time": row.get("briefing_time"),
             "thinking_mode": row.get("thinking_mode", "off"),
             "code_execution": bool(row.get("code_execution", 0)),
+            "active_provider": row.get("active_provider", "gemini"),
         }
     return None
 
