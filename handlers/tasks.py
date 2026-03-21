@@ -10,12 +10,11 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, get_api_key
 from handlers.states import (
     CHOOSING, CONVERSATION, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS,
     TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN,
 )
-from config import GEMINI_API_TOKEN
 from chat.session import ChatSession
 from database.database import (
     create_task, get_user_tasks, get_user, get_user_task_hashtags,
@@ -293,7 +292,7 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
     # Generate Plan (structured output — returns parsed dict directly)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     msg = await query.edit_message_text(_("Generating plan..."))
-    api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+    api_key = await get_api_key(context, user_id)
     provider_name = context.user_data.get("active_provider", "gemini")
     model_name = context.user_data.get("model_name")
     chat = ChatSession(provider_name=provider_name, api_key=api_key, model_name=model_name)
@@ -549,7 +548,7 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
             user = await get_user(pool, user_id)
         else:
             user = None
-        api_key = user.get('api_key') if user else GEMINI_API_TOKEN
+        api_key = user.get('api_key') if user else None
         model_name = user.get('model_name') if user else None
 
         chat = ChatSession(

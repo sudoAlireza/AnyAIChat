@@ -6,9 +6,8 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, get_api_key
 from handlers.states import REMINDERS_MENU, REMINDERS_INPUT
-from config import GEMINI_API_TOKEN
 from chat.session import ChatSession
 from database.database import (
     add_reminder, get_user_reminders, delete_reminder,
@@ -83,7 +82,7 @@ async def handle_reminder_input(update: Update, context: ContextTypes.DEFAULT_TY
     # Smart NLP parsing with AI (structured output)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
     try:
-        api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+        api_key = await get_api_key(context, user_id)
         provider_name = context.user_data.get("active_provider", "gemini")
         chat = ChatSession(provider_name=provider_name, api_key=api_key, model_name=None)
         await chat.start_chat()

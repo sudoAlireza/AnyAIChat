@@ -6,9 +6,8 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, get_api_key
 from handlers.states import CHOOSING, CONVERSATION, TEMPLATES_MENU
-from config import GEMINI_API_TOKEN
 from chat.session import ChatSession
 from database.database import get_user
 from helpers.helpers import strip_markdown
@@ -68,7 +67,7 @@ async def select_template_handler(update: Update, context: ContextTypes.DEFAULT_
     user_id = update.effective_user.id
     pool = _get_pool(context)
     user_data = await get_user(pool, user_id)
-    api_key = context.user_data.get("api_key") or (user_data.get('api_key') if user_data else None) or GEMINI_API_TOKEN
+    api_key = await get_api_key(context, user_id)
     model_name = user_data.get('model_name') if user_data else context.user_data.get("model_name")
     pinned_context = user_data.get('pinned_context') if user_data else None
     user_language = user_data.get('language', 'auto') if user_data else 'auto'
@@ -142,7 +141,7 @@ async def start_translation_handler(update: Update, context: ContextTypes.DEFAUL
     user_id = update.effective_user.id
     pool = _get_pool(context)
     user_data = await get_user(pool, user_id)
-    api_key = context.user_data.get("api_key") or (user_data.get('api_key') if user_data else None) or GEMINI_API_TOKEN
+    api_key = await get_api_key(context, user_id)
 
     provider_name = context.user_data.get("active_provider", "gemini")
     chat = ChatSession(provider_name=provider_name, api_key=api_key, model_name=None, system_instruction=persona)

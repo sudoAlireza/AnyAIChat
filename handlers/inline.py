@@ -5,9 +5,9 @@ import logging
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import ContextTypes
 
-from handlers.common import _get_pool
+from handlers.common import _get_pool, get_api_key
 from handlers.states import *
-from config import GEMINI_API_TOKEN
+from config import GEMINI_MODEL
 from chat.session import ChatSession
 from database.database import get_user
 
@@ -25,8 +25,6 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     user = await get_user(pool, user_id)
 
     api_key = user.get('api_key') if user else None
-    if not api_key:
-        api_key = GEMINI_API_TOKEN
     if not api_key:
         results = [InlineQueryResultArticle(
             id="no_key",

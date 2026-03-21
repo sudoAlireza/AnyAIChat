@@ -9,9 +9,8 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, get_api_key
 from handlers.states import CONVERSATION
-from config import GEMINI_API_TOKEN
 from chat.session import ChatSession
 from database.database import get_user
 from helpers.helpers import strip_markdown
@@ -34,7 +33,7 @@ async def generate_image_handler(update: Update, context: ContextTypes.DEFAULT_T
     msg = await update.message.reply_text("🎨 ...")
 
     try:
-        api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+        api_key = await get_api_key(context, update.effective_user.id)
         provider_name = context.user_data.get("active_provider", "gemini")
         chat = ChatSession(provider_name=provider_name, api_key=api_key, model_name=None)
         await chat.start_chat()

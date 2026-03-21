@@ -106,3 +106,22 @@ def require_capability(capability: Capability, context: ContextTypes.DEFAULT_TYP
 def get_active_provider_name(context: ContextTypes.DEFAULT_TYPE) -> str:
     """Get the user's active provider name from context."""
     return context.user_data.get("active_provider", "gemini")
+
+
+async def get_api_key(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
+    """Get the user's API key, loading from DB if not cached in context."""
+    cached = context.user_data.get("api_key")
+    if cached:
+        return cached
+
+    # Fall back to DB lookup
+    from database.database import get_user
+    pool = _get_pool(context)
+    user = await get_user(pool, user_id)
+    if user and user.get("api_key"):
+        context.user_data["api_key"] = user["api_key"]
+        return user["api_key"]
+
+    # Last resort: env var
+    from config import GEMINI_API_TOKEN
+    return GEMINI_API_TOKEN

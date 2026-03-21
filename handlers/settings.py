@@ -8,12 +8,12 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool, get_active_provider_name
+from handlers.common import restricted, _, _get_pool, get_active_provider_name, get_api_key
 from handlers.states import (
     SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT,
     PERSONA_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, PINNED_CONTEXT_INPUT,
 )
-from config import GEMINI_MODEL, GEMINI_API_TOKEN
+from config import GEMINI_MODEL
 from database.database import (
     get_user, update_user_settings,
     add_shortcut, get_user_shortcuts, delete_shortcut,
@@ -254,7 +254,7 @@ async def open_models_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) -
     provider = ProviderRegistry().get(provider_name)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+    api_key = await get_api_key(context, user_id)
 
     try:
         models = await provider.list_models(api_key)
@@ -421,7 +421,7 @@ async def open_storage_menu(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     logger.info(f"Opening storage menu for user {user_id}")
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+    api_key = await get_api_key(context, user_id)
 
     provider_name = get_active_provider_name(context)
     provider = ProviderRegistry().get(provider_name)

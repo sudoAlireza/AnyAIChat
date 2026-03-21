@@ -7,9 +7,9 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, get_api_key
 from handlers.states import KNOWLEDGE_MENU, KNOWLEDGE_INPUT
-from config import GEMINI_API_TOKEN, RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP
+from config import RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP
 from database.database import (
     add_knowledge_with_content, get_user_knowledge, delete_knowledge,
     save_knowledge_chunks, delete_chunks_by_knowledge_id,
@@ -62,7 +62,7 @@ async def handle_knowledge_input(update: Update, context: ContextTypes.DEFAULT_T
     await file.download_to_drive(file_path)
 
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+    api_key = await get_api_key(context, user_id)
     model_name = context.user_data.get("model_name")
     provider_name = context.user_data.get("active_provider", "gemini")
 

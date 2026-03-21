@@ -15,14 +15,13 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from handlers.common import restricted, _, _get_pool, _clear_last_ai_buttons, _current_user_id
+from handlers.common import restricted, _, _get_pool, _clear_last_ai_buttons, _current_user_id, get_api_key
 from handlers.states import (
     CHOOSING,
     CONVERSATION,
     API_KEY_INPUT,
 )
 from chat.session import ChatSession
-from config import GEMINI_API_TOKEN
 from database.database import (
     get_user,
     update_user_api_key,
@@ -101,7 +100,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                         "Answer questions, provide examples, go deeper into the topic, or clarify concepts. "
                         "Be conversational, helpful, and encourage curiosity."
                     )
-                    api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+                    api_key = await get_api_key(context, user_id)
                     provider_name = context.user_data.get("active_provider", "gemini")
                     model_name = context.user_data.get("model_name")
                     web_search = context.user_data.get("web_search", False)

@@ -21,11 +21,10 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from handlers.common import restricted, _, _get_pool, _clear_last_ai_buttons, _current_user_id
+from handlers.common import restricted, _, _get_pool, _clear_last_ai_buttons, _current_user_id, get_api_key
 from handlers.states import CONVERSATION, CHOOSING
 from chat.session import ChatSession
 from config import (
-    GEMINI_API_TOKEN,
     MAX_MESSAGE_LENGTH,
     CONVERSATION_WARNING_THRESHOLD,
     CONVERSATION_AUTO_RESET_THRESHOLD,
@@ -127,7 +126,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             thinking_mode = user_data.get("thinking_mode", "off") if user_data else "off"
             code_exec = user_data.get("code_execution", False) if user_data else False
 
-            api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
+            api_key = await get_api_key(context, user_id)
             provider_name = context.user_data.get("active_provider", "gemini")
 
             chat_session = ChatSession(
