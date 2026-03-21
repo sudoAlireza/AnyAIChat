@@ -23,104 +23,76 @@ from config import (
     TEMP_FILE_MAX_AGE_HOURS,
 )
 from monitoring.metrics import log_metrics_task
-from bot.conversation_handlers import (
-    start,
-    start_over,
-    start_conversation,
-    reply_and_new_message,
-    get_conversation_history,
-    delete_conversation_handler,
-    get_conversation_handler,
-    done,
-    open_tasks_menu,
-    start_add_task,
-    handle_task_prompt,
-    handle_task_days,
-    back_to_days_handler,
-    handle_task_time,
-    handle_day_toggle,
-    handle_task_interval,
-    handle_task_plan_approval,
-    list_tasks,
-    view_task_handler,
-    delete_task_handler,
-    back_to_time_handler,
-    set_scheduler,
-    schedule_task_job,
-    open_settings_menu,
-    open_models_menu,
-    set_model_handler,
-    show_all_models_handler,
-    open_storage_menu,
-    toggle_web_search,
-    handle_api_key,
-    update_api_key_handler,
-    open_persona_menu,
-    handle_persona_input,
-    open_reminders_menu,
-    start_add_reminder,
-    handle_reminder_input,
-    delete_reminder_handler,
-    open_knowledge_menu,
-    start_add_knowledge,
-    handle_knowledge_input,
-    delete_knowledge_handler,
-    generate_image_handler,
-    check_reminders_task,
-    # Feature handlers (batch 1)
-    search_menu_handler,
-    handle_search_input,
-    browse_tags_handler,
-    tag_browse_results_handler,
-    export_conversation_handler,
-    share_conversation_handler,
-    tag_conversation_handler,
-    handle_tag_input,
-    remove_tag_handler,
-    usage_dashboard_handler,
-    open_shortcuts_menu,
-    start_add_shortcut,
-    handle_shortcut_input,
-    delete_shortcut_handler,
-    open_pinned_context_menu,
-    handle_pinned_context_input,
-    clear_pinned_context_handler,
-    language_menu_handler,
-    set_language_handler,
-    inline_query_handler,
-    weekly_summary_task,
-    # Feature handlers (new SDK features)
-    toggle_thinking_mode,
-    toggle_code_execution,
-    # Feature handlers (batch 2)
-    templates_menu_handler,
-    select_template_handler,
-    translation_mode_handler,
-    start_translation_handler,
-    bookmarks_menu_handler,
-    delete_bookmark_handler,
-    bookmark_message_handler,
-    prompt_library_handler,
-    start_add_prompt_handler,
-    handle_prompt_add,
-    use_prompt_handler,
-    delete_prompt_handler,
-    suggest_followup_handler,
-    voice_output_handler,
-    feedback_up_handler,
-    feedback_down_handler,
-    branch_conversation_handler,
-    set_resume_point_handler,
-    briefing_menu_handler,
-    handle_briefing_time_input,
-    disable_briefing_handler,
-    url_monitor_menu_handler,
-    start_add_url_monitor,
-    handle_url_monitor_input,
-    delete_url_monitor_handler,
-    check_url_monitors_task,
-    daily_briefing_task,
+
+# --- New modular handler imports ---
+from handlers.common import _current_user_id
+from handlers.states import (
+    API_KEY_INPUT, CHOOSING, CONVERSATION, CONVERSATION_HISTORY,
+    TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS, TASKS_ADD_TIME,
+    TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU,
+    STORAGE_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT,
+    KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU,
+    SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU,
+    BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU,
+    URL_MONITOR_MENU, URL_MONITOR_INPUT,
 )
+from handlers.onboarding import start, handle_api_key, start_over, done
+from handlers.conversation import start_conversation, reply_and_new_message
+from handlers.history import (
+    get_conversation_history, get_conversation_handler, delete_conversation_handler,
+    search_menu_handler, handle_search_input, browse_tags_handler,
+    tag_browse_results_handler, tag_conversation_handler, handle_tag_input,
+    remove_tag_handler, export_conversation_handler, share_conversation_handler,
+    usage_dashboard_handler, branch_conversation_handler, set_resume_point_handler,
+)
+from handlers.settings import (
+    open_settings_menu, open_models_menu, set_model_handler,
+    show_all_models_handler, open_storage_menu, update_api_key_handler,
+    open_persona_menu, handle_persona_input, toggle_web_search,
+    toggle_thinking_mode, toggle_code_execution, open_shortcuts_menu,
+    start_add_shortcut, handle_shortcut_input, delete_shortcut_handler,
+    open_pinned_context_menu, handle_pinned_context_input,
+    clear_pinned_context_handler, language_menu_handler, set_language_handler,
+)
+from handlers.tasks import (
+    open_tasks_menu, start_add_task, handle_task_prompt, handle_task_days,
+    back_to_days_handler, handle_task_time, handle_day_toggle,
+    handle_task_interval, back_to_time_handler, handle_task_plan_approval,
+    list_tasks, view_task_handler, delete_task_handler,
+    set_scheduler, schedule_task_job,
+)
+from handlers.reminders import (
+    open_reminders_menu, start_add_reminder, handle_reminder_input,
+    delete_reminder_handler, check_reminders_task,
+)
+from handlers.knowledge import (
+    open_knowledge_menu, start_add_knowledge, handle_knowledge_input,
+    delete_knowledge_handler,
+)
+from handlers.templates import (
+    templates_menu_handler, select_template_handler,
+    translation_mode_handler, start_translation_handler,
+)
+from handlers.prompts import (
+    prompt_library_handler, start_add_prompt_handler, handle_prompt_add,
+    use_prompt_handler, delete_prompt_handler,
+)
+from handlers.bookmarks import (
+    bookmarks_menu_handler, delete_bookmark_handler, bookmark_message_handler,
+)
+from handlers.media import (
+    generate_image_handler, suggest_followup_handler, voice_output_handler,
+)
+from handlers.feedback import feedback_up_handler, feedback_down_handler
+from handlers.briefing import (
+    set_application as set_briefing_application,
+    briefing_menu_handler, handle_briefing_time_input, disable_briefing_handler,
+    url_monitor_menu_handler, start_add_url_monitor, handle_url_monitor_input,
+    delete_url_monitor_handler, check_url_monitors_task, daily_briefing_task,
+    weekly_summary_task,
+)
+from handlers.inline import inline_query_handler
+
 from dotenv import load_dotenv
 
 # Load environment variables
@@ -140,7 +112,6 @@ except Exception as e:
 class UserIdFilter(logging.Filter):
     """Inject user_id into every log record from the current async context."""
     def filter(self, record):
-        from bot.conversation_handlers import _current_user_id
         record.user_id = _current_user_id.get('-')
         return True
 
@@ -152,11 +123,47 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 
 logger = logging.getLogger(__name__)
 
-CHOOSING, CONVERSATION, CONVERSATION_HISTORY, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS, TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN, SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT, PERSONA_MENU, PERSONA_INPUT, REMINDERS_MENU, REMINDERS_INPUT, KNOWLEDGE_MENU, KNOWLEDGE_INPUT, SEARCH_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU, BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU, URL_MONITOR_MENU, URL_MONITOR_INPUT = range(31)
+
+def _register_providers():
+    """Register all built-in AI providers."""
+    from providers.registry import ProviderRegistry
+    registry = ProviderRegistry()
+
+    # Gemini (always available)
+    from providers.gemini import GeminiProvider
+    registry.register(GeminiProvider())
+
+    # OpenAI (available if openai package is installed)
+    try:
+        from providers.openai_provider import OpenAIProvider
+        registry.register(OpenAIProvider())
+    except ImportError:
+        logger.info("OpenAI provider not available (openai package not installed)")
+
+    # Anthropic (available if anthropic package is installed)
+    try:
+        from providers.anthropic_provider import AnthropicProvider
+        registry.register(AnthropicProvider())
+    except ImportError:
+        logger.info("Anthropic provider not available (anthropic package not installed)")
+
+    # Pre-configured OpenAI-compatible endpoints
+    try:
+        from providers.openai_compat import OpenAICompatProvider, KNOWN_ENDPOINTS
+        for name, config in KNOWN_ENDPOINTS.items():
+            registry.register(OpenAICompatProvider(
+                provider_name=name,
+                base_url=config["base_url"],
+                display_name=config["display_name"],
+            ))
+    except ImportError:
+        logger.info("OpenAI-compatible providers not available (openai package not installed)")
+
+    logger.info(f"Registered providers: {registry.list_providers()}")
 
 
 def _check_access_config():
-    """Phase 1.6: Warn at startup if access control is not explicitly configured."""
+    """Warn at startup if access control is not explicitly configured."""
     if not AUTHORIZED_USER and not ALLOW_ALL_USERS:
         logger.warning(
             "Neither AUTHORIZED_USER nor ALLOW_ALL_USERS=true is set. "
@@ -168,7 +175,7 @@ def _check_access_config():
 
 
 def _cleanup_temp_files():
-    """Phase 4.2: Remove stale temp files from data/ directory."""
+    """Remove stale temp files from data/ directory."""
     data_dir = os.path.abspath("data")
     if not os.path.exists(data_dir):
         return
@@ -403,6 +410,9 @@ async def post_init(application: Application):
     """Initialize async resources after the application starts."""
     os.makedirs("data", exist_ok=True)
 
+    # Register AI providers
+    _register_providers()
+
     # Register bot commands with Telegram
     await application.bot.set_my_commands([
         BotCommand("start", "Open main menu"),
@@ -419,8 +429,11 @@ async def post_init(application: Application):
     application.bot_data["db_pool"] = pool
     logger.info(f"Database pool initialized at {DATABASE_PATH}")
 
-    # Phase 4.2: Cleanup stale temp files at startup
+    # Cleanup stale temp files at startup
     _cleanup_temp_files()
+
+    # Inject application reference into briefing module for background tasks
+    set_briefing_application(application)
 
     # Load and schedule existing tasks
     try:
@@ -450,7 +463,7 @@ async def post_init(application: Application):
 
 
 async def post_shutdown(application: Application):
-    """Phase 5.5: Graceful shutdown — clean up resources."""
+    """Graceful shutdown — clean up resources."""
     logger.info("Shutting down...")
 
     # Close database pool
@@ -470,7 +483,7 @@ def main() -> None:
         logger.error("TELEGRAM_BOT_TOKEN not found in environment variables.")
         return
 
-    # Phase 1.6: Check access configuration
+    # Check access configuration
     _check_access_config()
 
     application = (

@@ -368,6 +368,105 @@ async def m021_knowledge_chunks(conn):
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_chunks_knowledge ON knowledge_chunks(knowledge_id);")
 
 
+# --- Multi-Provider Migrations ---
+
+@migration
+async def m022_active_provider(conn):
+    """v22: Add active_provider column to users for multi-provider support."""
+    try:
+        await conn.execute("ALTER TABLE users ADD COLUMN active_provider TEXT DEFAULT 'gemini'")
+    except Exception:
+        pass
+
+
+@migration
+async def m023_user_api_keys(conn):
+    """v23: Create user_api_keys table for per-provider encrypted keys."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_api_keys (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            api_key TEXT NOT NULL,
+            base_url TEXT,
+            is_valid INTEGER DEFAULT 1,
+            last_validated_at TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, provider)
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_user_api_keys_user ON user_api_keys(user_id);")
+    # Auto-migrate existing keys from users table
+    await conn.execute("""
+        INSERT OR IGNORE INTO user_api_keys (user_id, provider, api_key)
+        SELECT user_id, 'gemini', api_key FROM users WHERE api_key IS NOT NULL AND api_key != ''
+    """)
+
+
+@migration
+async def m024_user_provider_settings(conn):
+    """v24: Create user_provider_settings table for per-provider model/settings."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_provider_settings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            provider TEXT NOT NULL,
+            model_name TEXT,
+            settings_json TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, provider)
+        );
+    """)
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_provider_settings_user ON user_provider_settings(user_id);")
+
+
+@migration
+async def m025_token_usage_provider(conn):
+    """v25: Add provider column to token_usage."""
+    try:
+        await conn.execute("ALTER TABLE token_usage ADD COLUMN provider TEXT")
+    except Exception:
+        pass
+
+
+@migration
+async def m026_conversations_provider(conn):
+    """v26: Add provider and model_name columns to conversations."""
+    try:
+        await conn.execute("ALTER TABLE conversations ADD COLUMN provider TEXT")
+    except Exception:
+        pass
+    try:
+        await conn.execute("ALTER TABLE conversations ADD COLUMN model_name TEXT")
+    except Exception:
+        pass
+
+
+@migration
+async def m027_custom_providers(conn):
+    """v27: Create custom_providers table for user-defined OpenAI-compatible endpoints."""
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS custom_providers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            name TEXT NOT NULL,
+            base_url TEXT NOT NULL,
+            display_name TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(user_id, name)
+        );
+    """)
+
+
+@migration
+async def m028_estimated_cost(conn):
+    """v28: Add estimated_cost_usd column to token_usage for monetization prep."""
+    try:
+        await conn.execute("ALTER TABLE token_usage ADD COLUMN estimated_cost_usd REAL")
+    except Exception:
+        pass
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -1137,3 +1236,121 @@ async def delete_chunks_by_knowledge_id(pool: DatabasePool, knowledge_id):
     await pool.execute_delete(
         "DELETE FROM knowledge_chunks WHERE knowledge_id=?", (knowledge_id,)
     )
+
+
+# --- Multi-Provider Key Functions ---
+
+async def get_user_api_key(pool: DatabasePool, user_id, provider):
+    """Get API key for a specific provider."""
+    row = await pool.execute_fetch_one(
+        "SELECT api_key, base_url, is_valid FROM user_api_keys WHERE user_id=? AND provider=?",
+        (user_id, provider),
+    )
+    if row:
+        api_key = row["api_key"]
+        if api_key:
+            api_key = decrypt_api_key(api_key)
+        return {"api_key": api_key, "base_url": row.get("base_url"), "is_valid": row.get("is_valid", 1)}
+    return None
+
+
+async def set_user_api_key(pool: DatabasePool, user_id, provider, api_key, base_url=None):
+    """Set or update API key for a provider."""
+    encrypted = encrypt_api_key(api_key)
+    sql = """INSERT INTO user_api_keys (user_id, provider, api_key, base_url, last_validated_at)
+             VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+             ON CONFLICT(user_id, provider) DO UPDATE SET
+             api_key=excluded.api_key, base_url=excluded.base_url,
+             is_valid=1, last_validated_at=CURRENT_TIMESTAMP"""
+    await pool.execute(sql, (user_id, provider, encrypted, base_url))
+
+
+async def get_user_providers(pool: DatabasePool, user_id):
+    """Get all providers configured by a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT provider, is_valid, last_validated_at FROM user_api_keys WHERE user_id=?",
+        (user_id,),
+    )
+    return [{"provider": r["provider"], "is_valid": r["is_valid"],
+             "last_validated_at": r.get("last_validated_at")} for r in rows]
+
+
+async def delete_user_api_key(pool: DatabasePool, user_id, provider):
+    """Delete a user's API key for a provider."""
+    await pool.execute_delete(
+        "DELETE FROM user_api_keys WHERE user_id=? AND provider=?", (user_id, provider)
+    )
+
+
+async def get_user_provider_settings(pool: DatabasePool, user_id, provider):
+    """Get provider-specific settings for a user."""
+    row = await pool.execute_fetch_one(
+        "SELECT model_name, settings_json FROM user_provider_settings WHERE user_id=? AND provider=?",
+        (user_id, provider),
+    )
+    if row:
+        settings = json.loads(row["settings_json"]) if row.get("settings_json") else {}
+        return {"model_name": row.get("model_name"), "settings": settings}
+    return None
+
+
+async def set_user_provider_settings(pool: DatabasePool, user_id, provider, model_name=None, settings=None):
+    """Set provider-specific settings for a user."""
+    settings_json = json.dumps(settings) if settings else None
+    sql = """INSERT INTO user_provider_settings (user_id, provider, model_name, settings_json)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(user_id, provider) DO UPDATE SET
+             model_name=COALESCE(excluded.model_name, model_name),
+             settings_json=COALESCE(excluded.settings_json, settings_json)"""
+    await pool.execute(sql, (user_id, provider, model_name, settings_json))
+
+
+async def set_active_provider(pool: DatabasePool, user_id, provider):
+    """Set the user's active provider."""
+    await update_user_settings(pool, user_id)  # ensure user row exists
+    await pool.execute(
+        "UPDATE users SET active_provider=? WHERE user_id=?", (provider, user_id)
+    )
+
+
+# --- Custom Provider Functions ---
+
+async def add_custom_provider(pool: DatabasePool, user_id, name, base_url, display_name=None):
+    """Add a custom OpenAI-compatible provider."""
+    sql = """INSERT INTO custom_providers (user_id, name, base_url, display_name)
+             VALUES (?, ?, ?, ?)
+             ON CONFLICT(user_id, name) DO UPDATE SET
+             base_url=excluded.base_url, display_name=excluded.display_name"""
+    return await pool.execute_insert(sql, (user_id, name, base_url, display_name))
+
+
+async def get_user_custom_providers(pool: DatabasePool, user_id):
+    """Get all custom providers for a user."""
+    rows = await pool.execute_fetch_all(
+        "SELECT id, name, base_url, display_name FROM custom_providers WHERE user_id=?",
+        (user_id,),
+    )
+    return [{"id": r["id"], "name": r["name"], "base_url": r["base_url"],
+             "display_name": r.get("display_name")} for r in rows]
+
+
+async def delete_custom_provider(pool: DatabasePool, user_id, name):
+    """Delete a custom provider."""
+    await pool.execute_delete(
+        "DELETE FROM custom_providers WHERE user_id=? AND name=?", (user_id, name)
+    )
+
+
+# --- Enhanced Token Usage ---
+
+async def record_token_usage_with_provider(pool: DatabasePool, user_id, prompt_tokens, completion_tokens,
+                                           total_tokens, model_name=None, provider=None,
+                                           cached_tokens=0, thinking_tokens=0, estimated_cost_usd=None):
+    """Record token usage with provider info and cost estimation."""
+    sql = ("INSERT INTO token_usage(user_id, prompt_tokens, completion_tokens, total_tokens, "
+           "model_name, provider, cached_tokens, thinking_tokens, estimated_cost_usd) "
+           "VALUES(?,?,?,?,?,?,?,?,?)")
+    return await pool.execute_insert(sql, (
+        user_id, prompt_tokens, completion_tokens, total_tokens,
+        model_name, provider, cached_tokens, thinking_tokens, estimated_cost_usd
+    ))
