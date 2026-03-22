@@ -7,7 +7,7 @@ import logging
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from handlers.common import restricted, _, _get_pool, get_api_key
+from handlers.common import restricted, _, _get_pool, get_api_key, _safe_callback_data
 from handlers.states import KNOWLEDGE_MENU, KNOWLEDGE_INPUT
 from config import RAG_CHUNK_SIZE, RAG_CHUNK_OVERLAP
 from database.database import (
@@ -128,7 +128,10 @@ async def handle_knowledge_input(update: Update, context: ContextTypes.DEFAULT_T
 async def delete_knowledge_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    doc_id = int(query.data.split("#")[1])
+    raw = _safe_callback_data(query.data)
+    if raw is None:
+        return KNOWLEDGE_MENU
+    doc_id = int(raw)
 
     pool = _get_pool(context)
     await delete_chunks_by_knowledge_id(pool, doc_id)

@@ -260,6 +260,7 @@ class GeminiProvider:
             raise _map_gemini_error(exc) from exc
         except json.JSONDecodeError as exc:
             logger.error(f"Failed to parse structured response: {exc}")
+            metrics.increment("gemini_errors")
             return ChatResponse(text="", metadata={"error": "json_parse_error"})
         except Exception as exc:
             logger.error(f"Gemini structured error: {exc}")
@@ -300,6 +301,7 @@ class GeminiProvider:
                     embeddings.append(list(emb.values))
             except Exception as e:
                 logger.error(f"Failed to embed batch {i}: {e}")
+                metrics.increment("gemini_embedding_errors")
                 for _ in batch:
                     embeddings.append([0.0] * 768)
         return embeddings

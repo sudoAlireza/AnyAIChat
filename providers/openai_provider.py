@@ -238,6 +238,7 @@ class OpenAIProvider:
             )
             return response
         except Exception as exc:
+            metrics.increment("openai_errors")
             raise _map_openai_error(exc) from exc
 
     # ----- One-shot -----
@@ -257,11 +258,7 @@ class OpenAIProvider:
 
         for msg in messages:
             role = msg.role
-            if role == "assistant":
-                role = "assistant"
-            elif role == "system":
-                role = "system"
-            else:
+            if role not in ("assistant", "system"):
                 role = "user"
 
             # Handle vision (images)

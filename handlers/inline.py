@@ -22,7 +22,16 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     pool = _get_pool(context)
     user = await get_user(pool, user_id)
 
-    api_key = user.get('api_key') if user else None  # DEPRECATED: use get_user_api_key() for per-provider keys
+    # Use per-provider key lookup instead of deprecated legacy field
+    provider_name = user.get('active_provider', 'gemini') if user else 'gemini'
+    api_key = None
+    if user:
+        from database.database import get_user_api_key
+        key_row = await get_user_api_key(pool, user_id, provider_name)
+        if key_row and key_row.get("api_key"):
+            api_key = key_row["api_key"]
+        if not api_key:
+            api_key = user.get('api_key')  # Legacy fallback
     if not api_key:
         results = [InlineQueryResultArticle(
             id="no_key",

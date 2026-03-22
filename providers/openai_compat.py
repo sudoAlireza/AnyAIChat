@@ -106,7 +106,7 @@ class OpenAICompatProvider:
                     display_name=m.id,
                     provider=self.provider_name,
                 ))
-            result.sort(key=lambda m: m.id)
+            result.sort(key=lambda m: m.id, reverse=True)
             return result
         except Exception as exc:
             logger.error(f"Failed to list models from {self.provider_name}: {exc}")
@@ -212,6 +212,7 @@ class OpenAICompatProvider:
             response = await client.chat.completions.create(
                 model=model,
                 messages=oai_messages,
+                response_format={"type": "json_object"},
             )
             metrics.increment(f"{self.provider_name}_messages_sent")
             text = response.choices[0].message.content or ""

@@ -11,7 +11,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool, get_api_key
+from handlers.common import restricted, _, _get_pool, get_api_key, _safe_callback_data
 from handlers.states import (
     TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS,
     TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN,
@@ -439,7 +439,9 @@ async def view_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     """Show full plan for a task with delete and back buttons."""
     query = update.callback_query
     await query.answer()
-    hashtag = query.data.split("#", 1)[1]
+    hashtag = _safe_callback_data(query.data)
+    if hashtag is None:
+        return TASKS_MENU
 
     pool = _get_pool(context)
     tasks = await get_user_tasks(pool, update.effective_user.id)
@@ -478,7 +480,9 @@ async def view_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
 async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    hashtag = query.data.split("#", 1)[1]
+    hashtag = _safe_callback_data(query.data)
+    if hashtag is None:
+        return TASKS_MENU
 
     pool = _get_pool(context)
     task_id = await delete_task_by_hashtag(pool, update.effective_user.id, hashtag)
@@ -522,8 +526,10 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
                         days_passed += 1
 
                 day_item = next((item for item in plan if item['day'] == days_passed), None)
-                if day_item is None and days_passed > len(plan):
+                if day_item is None and days_passed > plan_total:
                     # Plan is complete — mark task as done
+                    if not _application:
+                        return
                     completion_pool = _application.bot_data.get("db_pool")
                     if completion_pool:
                         await mark_task_completed(completion_pool, task_id)
@@ -554,6 +560,9 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
             except Exception as e:
                 logger.error(f"Error in task_wrapper plan processing: {e}")
 
+        if not _application:
+            logger.error(f"Task {task_id}: _application is None, cannot execute")
+            return
         pool = _application.bot_data.get("db_pool")
         if pool:
             user = await get_user(pool, user_id)

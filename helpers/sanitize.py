@@ -4,7 +4,7 @@ import logging
 logger = logging.getLogger(__name__)
 
 ALLOWED_EXTENSIONS = {".pdf", ".txt", ".ogg", ".jpg", ".jpeg", ".png", ".doc", ".docx", ".mp3", ".wav", ".webp"}
-DATA_DIR = os.path.abspath("data")
+DATA_DIR = os.path.realpath(os.path.abspath("data"))
 
 
 def safe_filename(file_id: str, original_name: str = None, prefix: str = "file") -> str:
@@ -28,9 +28,13 @@ def safe_filename(file_id: str, original_name: str = None, prefix: str = "file")
 
     full_path = os.path.join(DATA_DIR, filename)
 
-    # Verify the resolved path is still inside data/
+    # Verify the resolved path is still inside data/ using commonpath
     real_path = os.path.realpath(full_path)
-    if not real_path.startswith(DATA_DIR):
+    try:
+        common = os.path.commonpath([real_path, DATA_DIR])
+        if common != DATA_DIR:
+            raise ValueError("Path escapes data directory")
+    except ValueError:
         logger.error(f"Path traversal attempt detected: {full_path} -> {real_path}")
         raise ValueError("Invalid file path")
 

@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, _safe_callback_data
 from handlers.states import CONVERSATION, BOOKMARKS_MENU
 from database.database import add_bookmark, get_user_bookmarks, delete_bookmark
 from helpers.helpers import strip_markdown
@@ -51,7 +51,10 @@ async def delete_bookmark_handler(update: Update, context: ContextTypes.DEFAULT_
     """Delete a bookmark."""
     query = update.callback_query
     await query.answer()
-    bookmark_id = int(query.data.split("#")[1])
+    raw = _safe_callback_data(query.data)
+    if raw is None:
+        return BOOKMARKS_MENU
+    bookmark_id = int(raw)
 
     pool = _get_pool(context)
     await delete_bookmark(pool, update.effective_user.id, bookmark_id)

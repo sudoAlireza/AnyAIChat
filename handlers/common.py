@@ -34,6 +34,12 @@ def _get_pool(context: ContextTypes.DEFAULT_TYPE):
     return context.bot_data["db_pool"]
 
 
+def _safe_callback_data(data: str, separator: str = "#", index: int = 1) -> str | None:
+    """Safely extract a segment from callback data. Returns None if missing."""
+    parts = data.split(separator, index)
+    return parts[index] if len(parts) > index else None
+
+
 def restricted(func):
     """Access control + rate limiting decorator."""
     @wraps(func)

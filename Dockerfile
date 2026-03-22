@@ -18,7 +18,7 @@ COPY . .
 
 # Health check
 HEALTHCHECK --interval=60s --timeout=10s --start-period=30s --retries=3 \
-    CMD python healthcheck.py || exit 1
+    CMD python3 healthcheck.py || exit 1
 
 # Run main.py when the container launches
-CMD ["python", "main.py"]
+CMD ["python3", "main.py"]

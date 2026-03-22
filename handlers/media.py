@@ -42,7 +42,7 @@ async def generate_image_handler(update: Update, context: ContextTypes.DEFAULT_T
         await msg.edit_text(_("🎨 Image generation requested for: ") + prompt + _("\n\n(Note: Imagen API integration is experimental and may require specific account permissions)"))
     except Exception as e:
         logger.error(f"Image generation failed: {e}")
-        await msg.edit_text(_("❌ Failed to generate image. ") + str(e))
+        await msg.edit_text(_("❌ Failed to generate image. Please try again later."))
 
     return CONVERSATION
 

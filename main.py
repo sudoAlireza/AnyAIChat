@@ -513,7 +513,7 @@ def main() -> None:
         entry_points=entry_points(),
         states=states(),
         fallbacks=fallbacks(),
-        name="gemini_conversation",
+        name="main_conversation",
         persistent=False,
         allow_reentry=True,
     )

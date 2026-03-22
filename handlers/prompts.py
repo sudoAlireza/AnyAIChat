@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, _safe_callback_data
 from handlers.states import CONVERSATION, PROMPT_LIBRARY, PROMPT_ADD
 from database.database import add_prompt, get_user_prompts, delete_prompt
 from helpers.helpers import strip_markdown
@@ -95,7 +95,10 @@ async def use_prompt_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Use a saved prompt - start conversation with it."""
     query = update.callback_query
     await query.answer()
-    prompt_id = int(query.data.split("#")[1])
+    raw = _safe_callback_data(query.data)
+    if raw is None:
+        return PROMPT_LIBRARY
+    prompt_id = int(raw)
 
     pool = _get_pool(context)
     user_id = update.effective_user.id
@@ -123,7 +126,10 @@ async def delete_prompt_handler(update: Update, context: ContextTypes.DEFAULT_TY
     """Delete a prompt."""
     query = update.callback_query
     await query.answer()
-    prompt_id = int(query.data.split("#")[1])
+    raw = _safe_callback_data(query.data)
+    if raw is None:
+        return PROMPT_LIBRARY
+    prompt_id = int(raw)
 
     pool = _get_pool(context)
     await delete_prompt(pool, update.effective_user.id, prompt_id)

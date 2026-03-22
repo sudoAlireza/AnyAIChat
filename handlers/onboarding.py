@@ -93,6 +93,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     if context.args and context.args[0].startswith("discuss_"):
         try:
             parts = context.args[0].split("_")
+            if len(parts) < 3:
+                raise ValueError(f"Malformed discuss deep-link: {context.args[0]}")
             dl_task_id = int(parts[1])
             dl_day_num = int(parts[2])
             task = await get_task_by_id(pool, dl_task_id)

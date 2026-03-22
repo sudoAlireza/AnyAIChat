@@ -18,13 +18,17 @@ class DatabasePool:
     async def get_connection(self) -> aiosqlite.Connection:
         """Get an async SQLite connection with WAL mode enabled."""
         await self._semaphore.acquire()
-        conn = await aiosqlite.connect(self.db_path)
-        conn.row_factory = aiosqlite.Row
-        await conn.execute("PRAGMA journal_mode=WAL")
-        await conn.execute("PRAGMA busy_timeout=5000")
-        async with self._lock:
-            self._connections.append(conn)
-        return conn
+        try:
+            conn = await aiosqlite.connect(self.db_path)
+            conn.row_factory = aiosqlite.Row
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA busy_timeout=5000")
+            async with self._lock:
+                self._connections.append(conn)
+            return conn
+        except Exception:
+            self._semaphore.release()
+            raise
 
     async def release_connection(self, conn: aiosqlite.Connection):
         """Release a connection back to the pool."""

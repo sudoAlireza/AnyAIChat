@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes
 
-from handlers.common import restricted, _, _get_pool, get_api_key
+from handlers.common import restricted, _, _get_pool, get_api_key, _safe_callback_data
 from handlers.states import REMINDERS_MENU, REMINDERS_INPUT
 from chat.session import ChatSession
 from database.database import (
@@ -129,7 +129,10 @@ async def handle_reminder_input(update: Update, context: ContextTypes.DEFAULT_TY
 async def delete_reminder_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     query = update.callback_query
     await query.answer()
-    reminder_id = int(query.data.split("#")[1])
+    raw = _safe_callback_data(query.data)
+    if raw is None:
+        return REMINDERS_MENU
+    reminder_id = int(raw)
 
     pool = _get_pool(context)
     await delete_reminder(pool, update.effective_user.id, reminder_id)
@@ -148,7 +151,11 @@ async def check_reminders_task():
     if not pool:
         return
 
-    reminders = await get_pending_reminders(pool)
+    try:
+        reminders = await get_pending_reminders(pool)
+    except Exception as exc:
+        logger.error(f"Failed to fetch pending reminders: {exc}")
+        return
 
     for r in reminders:
         try:
@@ -168,8 +175,8 @@ async def check_reminders_task():
 
                     if next_time:
                         await add_reminder(pool, (r['user_id'], r['reminder_text'], next_time.strftime("%Y-%m-%d %H:%M"), r['recurring_interval']))
-                except Exception as re:
-                    logger.error(f"Failed to schedule recurring reminder: {re}")
+                except Exception as recur_err:
+                    logger.error(f"Failed to schedule recurring reminder: {recur_err}")
 
             await update_reminder_status(pool, r['id'], 'completed')
         except Exception as e:

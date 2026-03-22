@@ -10,7 +10,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool
+from handlers.common import restricted, _, _get_pool, _safe_callback_data
 from handlers.states import SETTINGS_MENU, BRIEFING_MENU, URL_MONITOR_MENU, URL_MONITOR_INPUT
 from database.database import (
     get_user, update_user_settings,
@@ -181,7 +181,10 @@ async def delete_url_monitor_handler(update: Update, context: ContextTypes.DEFAU
     """Delete a URL monitor."""
     query = update.callback_query
     await query.answer()
-    monitor_id = int(query.data.split("#")[1])
+    raw = _safe_callback_data(query.data)
+    if raw is None:
+        return URL_MONITOR_MENU
+    monitor_id = int(raw)
 
     pool = _get_pool(context)
     await delete_url_monitor(pool, update.effective_user.id, monitor_id)
@@ -199,7 +202,11 @@ async def check_url_monitors_task():
     if not pool:
         return
 
-    monitors = await get_active_monitors(pool)
+    try:
+        monitors = await get_active_monitors(pool)
+    except Exception as exc:
+        logger.error(f"Failed to fetch active monitors: {exc}")
+        return
 
     for m in monitors:
         try:

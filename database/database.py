@@ -525,6 +525,10 @@ async def create_table(pool: DatabasePool):
         logger.info(f"Database schema migrated to v{target_version}")
     except Exception as e:
         logger.error(f"Database migration error: {e}", exc_info=True)
+        try:
+            await conn.rollback()
+        except Exception:
+            pass
     finally:
         await pool.release_connection(conn)
 
@@ -564,8 +568,8 @@ async def select_conversations_by_user(pool: DatabasePool, conversation_page):
     from config import ITEMS_PER_PAGE
     user_id, offset = conversation_page
     rows = await pool.execute_fetch_all(
-        f"SELECT id, conv_id, user_id, title, history, created_at FROM conversations WHERE user_id=? ORDER BY id DESC LIMIT {ITEMS_PER_PAGE} OFFSET ?;",
-        (user_id, offset),
+        "SELECT id, conv_id, user_id, title, history, created_at FROM conversations WHERE user_id=? ORDER BY id DESC LIMIT ? OFFSET ?;",
+        (user_id, int(ITEMS_PER_PAGE), offset),
     )
     result = []
     for row in rows:

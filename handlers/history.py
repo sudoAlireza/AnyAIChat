@@ -13,7 +13,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from datetime import datetime
 
-from handlers.common import restricted, _, _get_pool, get_active_provider_name
+from handlers.common import restricted, _, _get_pool, get_active_provider_name, _safe_callback_data
 from handlers.states import (
     CHOOSING, CONVERSATION_HISTORY, SEARCH_INPUT, TAGS_INPUT,
 )
@@ -44,7 +44,9 @@ async def get_conversation_handler(update: Update, context: ContextTypes.DEFAULT
         if update.callback_query:
             query = update.callback_query
             await query.answer()
-            conv_id = query.data.split("#")[1]
+            conv_id = _safe_callback_data(query.data)
+            if conv_id is None:
+                return CONVERSATION_HISTORY
         else:
             conv_id = update.message.text.strip().replace("/", "")
 
@@ -175,7 +177,8 @@ async def get_conversation_history(update: Update, context: ContextTypes.DEFAULT
     await query.answer()
 
     user_id = query.from_user.id
-    page_number = int(query.data.split("#")[1])
+    raw_page = _safe_callback_data(query.data)
+    page_number = int(raw_page) if raw_page is not None else 1
     pool = _get_pool(context)
 
     count = await get_user_conversation_count(pool, user_id)
@@ -327,7 +330,9 @@ async def tag_browse_results_handler(update: Update, context: ContextTypes.DEFAU
     """Show conversations with a specific tag."""
     query = update.callback_query
     await query.answer()
-    tag = query.data.split("#")[1]
+    tag = _safe_callback_data(query.data)
+    if tag is None:
+        return SEARCH_INPUT
 
     pool = _get_pool(context)
     user_id = update.effective_user.id
@@ -409,7 +414,9 @@ async def remove_tag_handler(update: Update, context: ContextTypes.DEFAULT_TYPE)
     """Remove a tag from the current conversation."""
     query = update.callback_query
     await query.answer()
-    tag = query.data.split("#")[1]
+    tag = _safe_callback_data(query.data)
+    if tag is None:
+        return CONVERSATION_HISTORY
 
     conv_id = context.user_data.get("conversation_id")
     if not conv_id:

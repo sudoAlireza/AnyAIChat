@@ -343,7 +343,7 @@ class ChatSession:
             import re as _re
             json_match = _re.search(r'```(?:json)?\s*(\{[\s\S]*?\})\s*```', text)
             if not json_match:
-                json_match = _re.search(r'(\{[\s\S]*\})', text)
+                json_match = _re.search(r'(\{[\s\S]*?\})', text)
             if json_match:
                 try:
                     parsed = json.loads(json_match.group(1))

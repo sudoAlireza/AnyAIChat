@@ -1,10 +1,12 @@
 import logging
 import os
+import threading
 from cryptography.fernet import Fernet, InvalidToken
 
 logger = logging.getLogger(__name__)
 
 _fernet = None
+_fernet_lock = threading.Lock()
 
 
 def _get_fernet():
@@ -12,19 +14,27 @@ def _get_fernet():
     if _fernet is not None:
         return _fernet
 
-    key = os.getenv("ENCRYPTION_KEY", "")
-    if not key:
-        logger.warning(
-            "ENCRYPTION_KEY not set. Generating a temporary key. "
-            "Set ENCRYPTION_KEY env var for persistent encryption."
-        )
-        key = Fernet.generate_key().decode()
+    with _fernet_lock:
+        # Double-check after acquiring lock
+        if _fernet is not None:
+            return _fernet
 
-    try:
-        _fernet = Fernet(key.encode() if isinstance(key, str) else key)
-    except Exception:
-        logger.error("Invalid ENCRYPTION_KEY. Generating temporary key.")
-        _fernet = Fernet(Fernet.generate_key())
+        key = os.getenv("ENCRYPTION_KEY", "")
+        if not key:
+            logger.warning(
+                "ENCRYPTION_KEY not set. Generating a temporary key. "
+                "Set ENCRYPTION_KEY env var for persistent encryption."
+            )
+            key = Fernet.generate_key().decode()
+
+        try:
+            _fernet = Fernet(key.encode() if isinstance(key, str) else key)
+        except (ValueError, TypeError) as exc:
+            logger.error(
+                "Invalid ENCRYPTION_KEY: %s. Generating temporary key. "
+                "Previously encrypted data will NOT be decryptable!", exc
+            )
+            _fernet = Fernet(Fernet.generate_key())
 
     return _fernet
 

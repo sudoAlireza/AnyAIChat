@@ -6,7 +6,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool, get_api_key
+from handlers.common import restricted, _, _get_pool, get_api_key, _safe_callback_data
 from handlers.states import CHOOSING, CONVERSATION, TEMPLATES_MENU
 from chat.session import ChatSession
 from database.database import get_user
@@ -53,7 +53,9 @@ async def select_template_handler(update: Update, context: ContextTypes.DEFAULT_
     query = update.callback_query
     await query.answer()
 
-    template_id = query.data.split("#")[1]
+    template_id = _safe_callback_data(query.data)
+    if template_id is None:
+        return CHOOSING
     template = next((t for t in CONVERSATION_TEMPLATES if t['id'] == template_id), None)
     if not template:
         return CHOOSING
@@ -123,7 +125,9 @@ async def start_translation_handler(update: Update, context: ContextTypes.DEFAUL
     query = update.callback_query
     await query.answer()
 
-    target_lang = query.data.split("#")[1]
+    target_lang = _safe_callback_data(query.data)
+    if target_lang is None:
+        return TEMPLATES_MENU
     lang_names = {"en": "English", "fa": "Persian", "es": "Spanish", "fr": "French", "de": "German",
                   "zh": "Chinese", "ja": "Japanese", "ko": "Korean", "ar": "Arabic",
                   "ru": "Russian", "pt": "Portuguese", "tr": "Turkish"}

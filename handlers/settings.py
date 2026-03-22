@@ -7,7 +7,7 @@ from telegram.ext import ContextTypes
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 
-from handlers.common import restricted, _, _get_pool, get_active_provider_name, get_api_key
+from handlers.common import restricted, _, _get_pool, _safe_callback_data, get_active_provider_name, get_api_key
 from handlers.states import (
     SETTINGS_MENU, MODELS_MENU, STORAGE_MENU, API_KEY_INPUT,
     PERSONA_INPUT, SHORTCUTS_MENU, SHORTCUTS_INPUT, PINNED_CONTEXT_INPUT,
@@ -805,7 +805,10 @@ async def delete_shortcut_handler(update: Update, context: ContextTypes.DEFAULT_
     """Delete a shortcut."""
     query = update.callback_query
     await query.answer()
-    shortcut_id = int(query.data.split("#")[1])
+    raw = _safe_callback_data(query.data)
+    if raw is None:
+        return SHORTCUTS_MENU
+    shortcut_id = int(raw)
 
     pool = _get_pool(context)
     await delete_shortcut(pool, update.effective_user.id, shortcut_id)
