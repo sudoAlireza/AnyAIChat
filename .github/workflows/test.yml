@@ -1,0 +1,25 @@
+name: Tests
+
+on:
+  push:
+    branches: [main, project-refactor]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: |
+          pip install -r requirements.txt
+          pip install pytest pytest-asyncio pytest-cov ruff
+      - name: Lint
+        run: ruff check . --select E,F,W --ignore E501
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
