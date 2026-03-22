@@ -20,7 +20,7 @@ from chat.session import ChatSession
 from database.database import (
     create_task, get_user_tasks, get_user, get_user_task_hashtags,
     delete_task_by_hashtag, mark_task_completed, _generate_hashtag, record_token_usage,
-    get_task_by_id,
+    get_task_by_id, update_task_last_delivered_day,
 )
 from helpers.helpers import strip_markdown, split_message
 
@@ -497,43 +497,30 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return TASKS_MENU
 
 
-def _calculate_days_passed(interval: str, start_date: str) -> int:
-    """Count how many selected weekdays have passed from start_date to today (inclusive)."""
-    day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-    selected_weekdays = {day_map[d] for d in interval.split(",") if d in day_map}
-    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-    total_calendar_days = (datetime.now() - start_dt).days
-    days_passed = 0
-    for i in range(total_calendar_days + 1):
-        check_date = start_dt + timedelta(days=i)
-        if check_date.weekday() in selected_weekdays:
-            days_passed += 1
-    return days_passed
+def _build_target_prompt(prompt: str, plan_json: str | None, last_delivered_day: int) -> tuple[str, int | None, int | None]:
+    """Build the AI prompt for a task, returning (target_prompt, current_day, plan_total).
 
-
-def _build_target_prompt(prompt: str, plan_json: str | None, start_date: str | None, interval: str) -> tuple[str, int | None, int | None]:
-    """Build the AI prompt for a task, returning (target_prompt, days_passed, plan_total).
-
-    Returns days_passed=None if there is no plan.
-    Returns (None, days_passed, plan_total) if the plan is complete (caller should handle).
+    Uses last_delivered_day to determine the next day to deliver (last_delivered_day + 1).
+    Returns current_day=None if there is no plan.
+    Returns (None, current_day, plan_total) if the plan is complete (caller should handle).
     """
-    if not plan_json or not start_date:
+    if not plan_json:
         return prompt, None, None
 
     try:
         plan = json.loads(plan_json)
         plan_total = len(plan)
-        days_passed = _calculate_days_passed(interval, start_date)
+        current_day = last_delivered_day + 1
 
-        day_item = next((item for item in plan if item['day'] == days_passed), None)
-        if day_item is None and days_passed > plan_total:
+        day_item = next((item for item in plan if item['day'] == current_day), None)
+        if day_item is None and current_day > plan_total:
             # Signal: plan is complete
-            return None, days_passed, plan_total
+            return None, current_day, plan_total
         elif day_item:
             phase = day_item.get('phase', '')
             phase_info = f" Phase: {phase}." if phase else ""
             target_prompt = (
-                f"You are delivering Day {days_passed}/{len(plan)} of a structured learning plan.{phase_info}\n"
+                f"You are delivering Day {current_day}/{plan_total} of a structured learning plan.{phase_info}\n"
                 f"Today's title: {day_item['title']}\n"
                 f"Today's goal: {day_item['subject']}\n"
                 f"Overall topic: {prompt}\n\n"
@@ -541,9 +528,9 @@ def _build_target_prompt(prompt: str, plan_json: str | None, start_date: str | N
                 f"Start with a brief recap connection to yesterday, then deliver today's material. "
                 f"End with a quick action item or reflection question."
             )
-            return target_prompt, days_passed, plan_total
+            return target_prompt, current_day, plan_total
         else:
-            return f"Plan finished or day {days_passed} not found. Original prompt: {prompt}", days_passed, plan_total
+            return f"Plan finished or day {current_day} not found. Original prompt: {prompt}", current_day, plan_total
     except Exception as e:
         logger.error(f"Error in plan processing: {e}")
         return prompt, None, None
@@ -657,6 +644,51 @@ async def _send_task_result(task_id, user_id, prompt, response, chat, days_passe
         pending[user_id] = (last_sent.chat_id, last_sent.message_id)
 
 
+async def _run_task_delivery(task_id, user_id, prompt, plan_json, task_hashtag, pool):
+    """Core task delivery: build prompt, generate content, send result, track progress.
+
+    Returns True on success, False on failure.
+    On failure, does NOT increment last_delivered_day so the same day is retried.
+    """
+    # Load current last_delivered_day from DB (always fresh)
+    task = await get_task_by_id(pool, task_id)
+    if not task:
+        logger.error(f"Task {task_id}: not found in DB")
+        return False
+
+    last_delivered_day = task.get("last_delivered_day", 0)
+    target_prompt, current_day, plan_total = _build_target_prompt(prompt, plan_json, last_delivered_day)
+
+    # Plan complete
+    if target_prompt is None and current_day and plan_total:
+        await mark_task_completed(pool, task_id)
+        if _scheduler:
+            try:
+                _scheduler.remove_job(str(task_id))
+            except Exception:
+                pass
+        plan = json.loads(plan_json) if plan_json else []
+        await _application.bot.send_message(
+            chat_id=user_id,
+            text=f"🎉 *Plan Complete!* {task_hashtag}\nYour {len(plan)}-day plan on _{prompt[:40]}_ has finished.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return True
+
+    user = await get_user(pool, user_id) if pool else None
+    response, chat = await _generate_task_content(task_id, user_id, target_prompt, pool, user)
+
+    if not response or not response.text:
+        return False
+
+    # Success — increment last_delivered_day so next run delivers the next day
+    if current_day is not None:
+        await update_task_last_delivered_day(pool, task_id, current_day)
+
+    await _send_task_result(task_id, user_id, prompt, response, chat, current_day, plan_total, task_hashtag, pool)
+    return True
+
+
 def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=None, start_date=None, hashtag=None):
     if not _scheduler:
         return
@@ -666,39 +698,24 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
     hour, minute = map(int, run_time.split(":"))
 
     async def task_wrapper():
-        target_prompt, days_passed, plan_total = _build_target_prompt(prompt, plan_json, start_date, interval)
-
-        # Plan complete
-        if target_prompt is None and days_passed and plan_total:
-            if not _application:
-                return
-            completion_pool = _application.bot_data.get("db_pool")
-            if completion_pool:
-                await mark_task_completed(completion_pool, task_id)
-            try:
-                _scheduler.remove_job(str(task_id))
-            except Exception:
-                pass
-            plan = json.loads(plan_json)
-            await _application.bot.send_message(
-                chat_id=user_id,
-                text=f"🎉 *Plan Complete!* {task_hashtag}\nYour {len(plan)}-day plan on _{prompt[:40]}_ has finished.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
-            return
-
         if not _application:
             logger.error(f"Task {task_id}: _application is None, cannot execute")
             return
         pool = _application.bot_data.get("db_pool")
-        user = await get_user(pool, user_id) if pool else None
+        if not pool:
+            return
 
-        response, chat = await _generate_task_content(task_id, user_id, target_prompt, pool, user)
+        success = await _run_task_delivery(task_id, user_id, prompt, plan_json, task_hashtag, pool)
 
-        # If all attempts failed, notify the user with a retry button
-        if not response or not response.text:
+        if not success:
+            # Load fresh state to show accurate day info
+            task = await get_task_by_id(pool, task_id)
+            last_delivered = task.get("last_delivered_day", 0) if task else 0
+            plan_total = len(json.loads(plan_json)) if plan_json else None
+            current_day = last_delivered + 1
+            day_info = f" (Day {current_day}/{plan_total})" if plan_total else ""
+
             logger.error(f"Task {task_id}: all generation attempts failed, notifying user")
-            day_info = f" (Day {days_passed}/{plan_total})" if days_passed and plan_total else ""
             error_text = (
                 f"⚠️ {task_hashtag}{day_info}\n"
                 f"Failed to generate today's content for _{prompt[:50]}_.\n\n"
@@ -718,12 +735,8 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
                     chat_id=user_id, text=strip_markdown(error_text),
                     reply_markup=retry_keyboard,
                 )
-            return
-
-        await _send_task_result(task_id, user_id, prompt, response, chat, days_passed, plan_total, task_hashtag, pool)
 
     job_id = str(task_id)
-    # interval is a comma-separated list of day abbreviations, e.g. "mon,wed,fri"
     _scheduler.add_job(task_wrapper, 'cron', day_of_week=interval, hour=hour, minute=minute, id=job_id, replace_existing=True)
 
 
@@ -753,32 +766,26 @@ async def retry_task_handler(update, context):
         return
 
     user_id = task["user_id"]
-    # Verify the clicking user owns this task
     if update.effective_user.id != user_id:
         await query.answer(_("This is not your task."), show_alert=True)
         return
 
     prompt = task["prompt"]
     plan_json = task.get("plan_json")
-    start_date = task.get("start_date")
-    interval = _normalize_interval(task["interval"])
     task_hashtag = task.get("hashtag") or f"#Task{task_id}"
+    last_delivered = task.get("last_delivered_day", 0)
+    plan_total = len(json.loads(plan_json)) if plan_json else None
+    current_day = last_delivered + 1
 
     # Show loading state
     await query.edit_message_text(_("🔄 Retrying..."))
 
-    target_prompt, days_passed, plan_total = _build_target_prompt(prompt, plan_json, start_date, interval)
+    success = await _run_task_delivery(task_id, user_id, prompt, plan_json, task_hashtag, pool)
 
-    if target_prompt is None:
-        await query.edit_message_text(f"🎉 *Plan Complete!* {task_hashtag}", parse_mode=ParseMode.MARKDOWN)
-        return
-
-    user = await get_user(pool, user_id)
-    response, chat = await _generate_task_content(task_id, user_id, target_prompt, pool, user)
-
-    if not response or not response.text:
+    if not success:
+        day_info = f" (Day {current_day}/{plan_total})" if plan_total else ""
         error_text = (
-            f"⚠️ {task_hashtag}\n"
+            f"⚠️ {task_hashtag}{day_info}\n"
             f"Retry failed for _{prompt[:50]}_.\n\n"
             f"The task will try again at the next scheduled time."
         )
@@ -791,11 +798,9 @@ async def retry_task_handler(update, context):
             await query.edit_message_text(strip_markdown(error_text), reply_markup=retry_keyboard)
         return
 
-    # Remove the error message buttons (mark as resolved)
+    # Success — update the error message
+    day_info = f" (Day {current_day}/{plan_total})" if plan_total else ""
     try:
-        day_info = f" (Day {days_passed}/{plan_total})" if days_passed and plan_total else ""
         await query.edit_message_text(f"✅ {task_hashtag}{day_info} — content delivered.", parse_mode=ParseMode.MARKDOWN)
     except BadRequest:
         pass
-
-    await _send_task_result(task_id, user_id, prompt, response, chat, days_passed, plan_total, task_hashtag, pool)

@@ -484,6 +484,45 @@ async def m029_user_tiers(conn):
     """)
 
 
+@migration
+async def m030_task_last_delivered_day(conn):
+    """v30: Add last_delivered_day to tasks for reliable day tracking."""
+    try:
+        await conn.execute("ALTER TABLE tasks ADD COLUMN last_delivered_day INTEGER DEFAULT 0")
+    except Exception:
+        pass  # Column already exists
+
+    # Backfill: estimate last_delivered_day for existing active tasks from calendar
+    cursor = await conn.execute(
+        "SELECT id, interval, start_date, plan_json FROM tasks WHERE status='active' AND start_date IS NOT NULL"
+    )
+    rows = await cursor.fetchall()
+    day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+    # Normalize legacy intervals
+    _legacy = {"daily": "mon,tue,wed,thu,fri,sat,sun", "once": "mon,tue,wed,thu,fri,sat,sun", "weekly": "mon"}
+    from datetime import datetime as _dt, timedelta as _td
+    now = _dt.now()
+    for row in rows:
+        interval_raw = row[1] or "mon,tue,wed,thu,fri,sat,sun"
+        interval_norm = _legacy.get(interval_raw, interval_raw)
+        start_date = row[2]
+        try:
+            start_dt = _dt.strptime(start_date, "%Y-%m-%d")
+            selected_weekdays = {day_map[d] for d in interval_norm.split(",") if d in day_map}
+            total_cal = (now - start_dt).days
+            days_passed = 0
+            for i in range(total_cal + 1):
+                if (start_dt + _td(days=i)).weekday() in selected_weekdays:
+                    days_passed += 1
+            # Subtract 1: today's delivery may not have run yet
+            last_delivered = max(0, days_passed - 1)
+            await conn.execute(
+                "UPDATE tasks SET last_delivered_day=? WHERE id=?", (last_delivered, row[0])
+            )
+        except Exception:
+            pass
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -655,7 +694,7 @@ async def get_all_tasks(pool: DatabasePool, batch_size: int = 100, offset: int =
     Retrieve active tasks from the database in batches.
     """
     rows = await pool.execute_fetch_all(
-        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, status, hashtag "
+        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, status, hashtag, last_delivered_day "
         "FROM tasks WHERE status='active' LIMIT ? OFFSET ?",
         (batch_size, offset),
     )
@@ -670,6 +709,7 @@ async def get_all_tasks(pool: DatabasePool, batch_size: int = 100, offset: int =
             "start_date": row["start_date"],
             "status": row["status"],
             "hashtag": row["hashtag"],
+            "last_delivered_day": row["last_delivered_day"] or 0,
         }
         for row in rows
     ]
@@ -678,7 +718,7 @@ async def get_all_tasks(pool: DatabasePool, batch_size: int = 100, offset: int =
 async def get_user_tasks(pool: DatabasePool, user_id):
     """Retrieve tasks for a specific user."""
     rows = await pool.execute_fetch_all(
-        "SELECT id, prompt, run_time, interval, plan_json, start_date, hashtag FROM tasks WHERE user_id=? AND status='active'",
+        "SELECT id, prompt, run_time, interval, plan_json, start_date, hashtag, last_delivered_day FROM tasks WHERE user_id=? AND status='active'",
         (user_id,),
     )
     return [
@@ -690,6 +730,7 @@ async def get_user_tasks(pool: DatabasePool, user_id):
             "plan_json": row["plan_json"],
             "start_date": row["start_date"],
             "hashtag": row["hashtag"],
+            "last_delivered_day": row["last_delivered_day"] or 0,
         }
         for row in rows
     ]
@@ -728,7 +769,7 @@ async def mark_task_completed(pool: DatabasePool, task_id: int):
 async def get_task_by_id(pool: DatabasePool, task_id: int):
     """Retrieve a single task by its ID."""
     row = await pool.execute_fetch_one(
-        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, hashtag FROM tasks WHERE id=?",
+        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, hashtag, last_delivered_day FROM tasks WHERE id=?",
         (task_id,),
     )
     if row:
@@ -741,8 +782,16 @@ async def get_task_by_id(pool: DatabasePool, task_id: int):
             "plan_json": row["plan_json"],
             "start_date": row["start_date"],
             "hashtag": row["hashtag"],
+            "last_delivered_day": row["last_delivered_day"] or 0,
         }
     return None
+
+
+async def update_task_last_delivered_day(pool: DatabasePool, task_id: int, day: int):
+    """Update the last successfully delivered day for a task."""
+    await pool.execute(
+        "UPDATE tasks SET last_delivered_day=? WHERE id=?", (day, task_id)
+    )
 
 
 # --- User Functions ---
