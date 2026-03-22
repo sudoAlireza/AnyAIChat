@@ -61,7 +61,7 @@ from handlers.tasks import (
     back_to_days_handler, handle_task_time, handle_day_toggle,
     handle_task_interval, back_to_time_handler, handle_task_plan_approval,
     list_tasks, view_task_handler, delete_task_handler,
-    set_scheduler, schedule_task_job,
+    set_scheduler, schedule_task_job, retry_task_handler,
 )
 from handlers.reminders import (
     open_reminders_menu, start_add_reminder, handle_reminder_input,
@@ -518,6 +518,9 @@ def main() -> None:
         allow_reentry=True,
     )
     application.add_handler(conv_handler)
+
+    # Task retry handler — outside ConversationHandler so it works from background task messages
+    application.add_handler(CallbackQueryHandler(retry_task_handler, pattern="^TASK_RETRY#"), group=1)
 
     # Inline mode handler (outside ConversationHandler)
     application.add_handler(InlineQueryHandler(inline_query_handler))

@@ -20,6 +20,7 @@ from chat.session import ChatSession
 from database.database import (
     create_task, get_user_tasks, get_user, get_user_task_hashtags,
     delete_task_by_hashtag, mark_task_completed, _generate_hashtag, record_token_usage,
+    get_task_by_id,
 )
 from helpers.helpers import strip_markdown, split_message
 
@@ -496,6 +497,166 @@ async def delete_task_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     return TASKS_MENU
 
 
+def _calculate_days_passed(interval: str, start_date: str) -> int:
+    """Count how many selected weekdays have passed from start_date to today (inclusive)."""
+    day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
+    selected_weekdays = {day_map[d] for d in interval.split(",") if d in day_map}
+    start_dt = datetime.strptime(start_date, "%Y-%m-%d")
+    total_calendar_days = (datetime.now() - start_dt).days
+    days_passed = 0
+    for i in range(total_calendar_days + 1):
+        check_date = start_dt + timedelta(days=i)
+        if check_date.weekday() in selected_weekdays:
+            days_passed += 1
+    return days_passed
+
+
+def _build_target_prompt(prompt: str, plan_json: str | None, start_date: str | None, interval: str) -> tuple[str, int | None, int | None]:
+    """Build the AI prompt for a task, returning (target_prompt, days_passed, plan_total).
+
+    Returns days_passed=None if there is no plan.
+    Returns (None, days_passed, plan_total) if the plan is complete (caller should handle).
+    """
+    if not plan_json or not start_date:
+        return prompt, None, None
+
+    try:
+        plan = json.loads(plan_json)
+        plan_total = len(plan)
+        days_passed = _calculate_days_passed(interval, start_date)
+
+        day_item = next((item for item in plan if item['day'] == days_passed), None)
+        if day_item is None and days_passed > plan_total:
+            # Signal: plan is complete
+            return None, days_passed, plan_total
+        elif day_item:
+            phase = day_item.get('phase', '')
+            phase_info = f" Phase: {phase}." if phase else ""
+            target_prompt = (
+                f"You are delivering Day {days_passed}/{len(plan)} of a structured learning plan.{phase_info}\n"
+                f"Today's title: {day_item['title']}\n"
+                f"Today's goal: {day_item['subject']}\n"
+                f"Overall topic: {prompt}\n\n"
+                f"Provide today's content in a clear, engaging format. "
+                f"Start with a brief recap connection to yesterday, then deliver today's material. "
+                f"End with a quick action item or reflection question."
+            )
+            return target_prompt, days_passed, plan_total
+        else:
+            return f"Plan finished or day {days_passed} not found. Original prompt: {prompt}", days_passed, plan_total
+    except Exception as e:
+        logger.error(f"Error in plan processing: {e}")
+        return prompt, None, None
+
+
+async def _generate_task_content(task_id: int, user_id: int, target_prompt: str, pool, user) -> tuple:
+    """Generate AI content for a task. Returns (response, chat) or (None, None) on failure."""
+    from database.database import get_user_api_key, get_user_provider_settings
+
+    provider_name = user.get('active_provider', 'gemini') if user else 'gemini'
+    api_key = None
+    model_name = None
+    if pool:
+        key_row = await get_user_api_key(pool, user_id, provider_name)
+        if key_row and key_row.get("api_key"):
+            api_key = key_row["api_key"]
+        prov_settings = await get_user_provider_settings(pool, user_id, provider_name)
+        if prov_settings and prov_settings.get("model_name"):
+            model_name = prov_settings["model_name"]
+    if not api_key and user:
+        api_key = user.get('api_key')
+    if not model_name and user:
+        model_name = user.get('model_name')
+
+    # Try generating AI response with retries
+    response = None
+    chat = None
+    max_retries = 3
+    retry_delay = 5
+
+    for attempt in range(1, max_retries + 1):
+        try:
+            chat = ChatSession(
+                provider_name=provider_name, api_key=api_key, model_name=model_name,
+                web_search=bool(user.get('grounding')) if user else False,
+            )
+            await chat.start_chat()
+            response = await chat.one_shot(target_prompt)
+            break
+        except Exception as e:
+            logger.warning(f"Task {task_id} attempt {attempt}/{max_retries} failed ({provider_name}/{model_name}): {e}")
+            if attempt < max_retries:
+                await asyncio.sleep(retry_delay)
+
+    # Fallback to Gemini if primary provider failed
+    if not response or not response.text:
+        if provider_name != "gemini" and pool:
+            from database.database import get_user_api_key as _get_api_key
+            gemini_key_row = await _get_api_key(pool, user_id, "gemini")
+            gemini_key = gemini_key_row["api_key"] if gemini_key_row and gemini_key_row.get("api_key") else None
+            if not gemini_key and user:
+                gemini_key = user.get("api_key")
+            if gemini_key:
+                logger.info(f"Task {task_id}: falling back to Gemini")
+                try:
+                    chat = ChatSession(
+                        provider_name="gemini", api_key=gemini_key, model_name="gemini-2.0-flash",
+                        web_search=bool(user.get('grounding')) if user else False,
+                    )
+                    await chat.start_chat()
+                    response = await chat.one_shot(target_prompt)
+                except Exception as fb_err:
+                    logger.error(f"Task {task_id}: Gemini fallback also failed: {fb_err}")
+
+    return response, chat
+
+
+async def _send_task_result(task_id, user_id, prompt, response, chat, days_passed, plan_total, task_hashtag, pool):
+    """Send the generated task content to the user."""
+    if response.usage and pool:
+        await record_token_usage(
+            pool, user_id, response.usage.get("prompt_tokens", 0),
+            response.usage.get("completion_tokens", 0),
+            response.usage.get("total_tokens", 0),
+            model_name=chat.model_name,
+            cached_tokens=response.usage.get("cached_tokens", 0),
+            thinking_tokens=response.usage.get("thinking_tokens", 0),
+        )
+    if days_passed and plan_total:
+        header = f"📬 *Day {days_passed}/{plan_total}* {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    else:
+        header = f"📬 {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
+    parts = split_message(header + response.text)
+
+    # Build buttons for the last message part
+    last_markup = None
+    bot_username = _application.bot_data.get("bot_username", "")
+    buttons = []
+    if days_passed and plan_total and bot_username:
+        discuss_url = f"https://t.me/{bot_username}?start=discuss_{task_id}_{days_passed}"
+        buttons.append(InlineKeyboardButton("💬 Discuss", url=discuss_url))
+    if bot_username:
+        menu_url = f"https://t.me/{bot_username}?start=menu"
+        buttons.append(InlineKeyboardButton("📋 Menu", url=menu_url))
+    if buttons:
+        last_markup = InlineKeyboardMarkup([buttons])
+
+    last_sent = None
+    for i, part in enumerate(parts):
+        is_last = i == len(parts) - 1
+        markup = last_markup if is_last else None
+        try:
+            last_sent = await _application.bot.send_message(chat_id=user_id, text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
+        except BadRequest as e:
+            logger.error(f"Failed to send task result with markdown: {e}")
+            last_sent = await _application.bot.send_message(chat_id=user_id, text=strip_markdown(part), reply_markup=markup)
+
+    # Store message ID so buttons can be cleared when user opens menu
+    if last_sent and last_markup:
+        pending = _application.bot_data.setdefault("pending_task_buttons", {})
+        pending[user_id] = (last_sent.chat_id, last_sent.message_id)
+
+
 def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=None, start_date=None, hashtag=None):
     if not _scheduler:
         return
@@ -505,127 +666,36 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
     hour, minute = map(int, run_time.split(":"))
 
     async def task_wrapper():
-        target_prompt = prompt
-        days_passed = None
-        plan_total = None
+        target_prompt, days_passed, plan_total = _build_target_prompt(prompt, plan_json, start_date, interval)
 
-        if plan_json and start_date:
+        # Plan complete
+        if target_prompt is None and days_passed and plan_total:
+            if not _application:
+                return
+            completion_pool = _application.bot_data.get("db_pool")
+            if completion_pool:
+                await mark_task_completed(completion_pool, task_id)
             try:
-                plan = json.loads(plan_json)
-                plan_total = len(plan)
-                start_dt = datetime.strptime(start_date, "%Y-%m-%d")
-                # Count scheduled runs: how many selected weekdays from start_date to today (inclusive)
-                selected_days = set(interval.split(","))
-                day_map = {"mon": 0, "tue": 1, "wed": 2, "thu": 3, "fri": 4, "sat": 5, "sun": 6}
-                selected_weekdays = {day_map[d] for d in selected_days if d in day_map}
-                total_calendar_days = (datetime.now() - start_dt).days
-                days_passed = 0
-                for i in range(total_calendar_days + 1):
-                    check_date = start_dt + timedelta(days=i)
-                    if check_date.weekday() in selected_weekdays:
-                        days_passed += 1
-
-                day_item = next((item for item in plan if item['day'] == days_passed), None)
-                if day_item is None and days_passed > plan_total:
-                    # Plan is complete — mark task as done
-                    if not _application:
-                        return
-                    completion_pool = _application.bot_data.get("db_pool")
-                    if completion_pool:
-                        await mark_task_completed(completion_pool, task_id)
-                    try:
-                        _scheduler.remove_job(str(task_id))
-                    except Exception:
-                        pass
-                    await _application.bot.send_message(
-                        chat_id=user_id,
-                        text=f"🎉 *Plan Complete!* {task_hashtag}\nYour {len(plan)}-day plan on _{prompt[:40]}_ has finished.",
-                        parse_mode=ParseMode.MARKDOWN,
-                    )
-                    return
-                elif day_item:
-                    phase = day_item.get('phase', '')
-                    phase_info = f" Phase: {phase}." if phase else ""
-                    target_prompt = (
-                        f"You are delivering Day {days_passed}/{len(plan)} of a structured learning plan.{phase_info}\n"
-                        f"Today's title: {day_item['title']}\n"
-                        f"Today's goal: {day_item['subject']}\n"
-                        f"Overall topic: {prompt}\n\n"
-                        f"Provide today's content in a clear, engaging format. "
-                        f"Start with a brief recap connection to yesterday, then deliver today's material. "
-                        f"End with a quick action item or reflection question."
-                    )
-                else:
-                    target_prompt = f"Plan finished or day {days_passed} not found. Original prompt: {prompt}"
-            except Exception as e:
-                logger.error(f"Error in task_wrapper plan processing: {e}")
+                _scheduler.remove_job(str(task_id))
+            except Exception:
+                pass
+            plan = json.loads(plan_json)
+            await _application.bot.send_message(
+                chat_id=user_id,
+                text=f"🎉 *Plan Complete!* {task_hashtag}\nYour {len(plan)}-day plan on _{prompt[:40]}_ has finished.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+            return
 
         if not _application:
             logger.error(f"Task {task_id}: _application is None, cannot execute")
             return
         pool = _application.bot_data.get("db_pool")
-        if pool:
-            user = await get_user(pool, user_id)
-        else:
-            user = None
+        user = await get_user(pool, user_id) if pool else None
 
-        # Load per-provider API key and model
-        provider_name = user.get('active_provider', 'gemini') if user else 'gemini'
-        from database.database import get_user_api_key, get_user_provider_settings
-        api_key = None
-        model_name = None
-        if pool:
-            key_row = await get_user_api_key(pool, user_id, provider_name)
-            if key_row and key_row.get("api_key"):
-                api_key = key_row["api_key"]
-            prov_settings = await get_user_provider_settings(pool, user_id, provider_name)
-            if prov_settings and prov_settings.get("model_name"):
-                model_name = prov_settings["model_name"]
-        # Fallback to legacy fields
-        if not api_key and user:
-            api_key = user.get('api_key')
-        if not model_name and user:
-            model_name = user.get('model_name')
+        response, chat = await _generate_task_content(task_id, user_id, target_prompt, pool, user)
 
-        # Try generating AI response with retries and fallback
-        response = None
-        max_retries = 3
-        retry_delay = 5  # seconds
-
-        for attempt in range(1, max_retries + 1):
-            try:
-                chat = ChatSession(
-                    provider_name=provider_name, api_key=api_key, model_name=model_name,
-                    web_search=bool(user.get('grounding')) if user else False,
-                )
-                await chat.start_chat()
-                response = await chat.one_shot(target_prompt)
-                break  # success
-            except Exception as e:
-                logger.warning(f"Task {task_id} attempt {attempt}/{max_retries} failed ({provider_name}/{model_name}): {e}")
-                if attempt < max_retries:
-                    await asyncio.sleep(retry_delay)
-
-        # Fallback to Gemini if primary provider failed
-        if not response or not response.text:
-            if provider_name != "gemini" and pool:
-                gemini_key_row = await get_user_api_key(pool, user_id, "gemini")
-                gemini_key = gemini_key_row["api_key"] if gemini_key_row and gemini_key_row.get("api_key") else None
-                if not gemini_key and user:
-                    gemini_key = user.get("api_key")
-                if gemini_key:
-                    logger.info(f"Task {task_id}: falling back to Gemini")
-                    try:
-                        chat = ChatSession(
-                            provider_name="gemini", api_key=gemini_key, model_name="gemini-2.0-flash",
-                            web_search=bool(user.get('grounding')) if user else False,
-                        )
-                        await chat.start_chat()
-                        response = await chat.one_shot(target_prompt)
-                    except Exception as fb_err:
-                        logger.error(f"Task {task_id}: Gemini fallback also failed: {fb_err}")
-
-        # If all attempts failed, notify the user
+        # If all attempts failed, notify the user with a retry button
         if not response or not response.text:
             logger.error(f"Task {task_id}: all generation attempts failed, notifying user")
             day_info = f" (Day {days_passed}/{plan_total})" if days_passed and plan_total else ""
@@ -635,54 +705,97 @@ def schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json=No
                 f"This can happen due to temporary API issues or model limitations. "
                 f"The task will try again at the next scheduled time."
             )
+            retry_keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(_("🔄 Try Again"), callback_data=f"TASK_RETRY#{task_id}")]
+            ])
             try:
-                await _application.bot.send_message(chat_id=user_id, text=error_text, parse_mode=ParseMode.MARKDOWN)
+                await _application.bot.send_message(
+                    chat_id=user_id, text=error_text,
+                    parse_mode=ParseMode.MARKDOWN, reply_markup=retry_keyboard,
+                )
             except BadRequest:
-                await _application.bot.send_message(chat_id=user_id, text=strip_markdown(error_text))
+                await _application.bot.send_message(
+                    chat_id=user_id, text=strip_markdown(error_text),
+                    reply_markup=retry_keyboard,
+                )
             return
 
-        if response.usage and pool:
-            await record_token_usage(
-                pool, user_id, response.usage.get("prompt_tokens", 0),
-                response.usage.get("completion_tokens", 0),
-                response.usage.get("total_tokens", 0),
-                model_name=chat.model_name,
-                cached_tokens=response.usage.get("cached_tokens", 0),
-                thinking_tokens=response.usage.get("thinking_tokens", 0),
-            )
-        if days_passed and plan_total:
-            header = f"📬 *Day {days_passed}/{plan_total}* {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        else:
-            header = f"📬 {task_hashtag}\n_{prompt[:50]}_\n━━━━━━━━━━━━━━━━━━━━━━━━━\n\n"
-        parts = split_message(header + response.text)
-        # Build buttons for the last message part
-        last_markup = None
-        bot_username = _application.bot_data.get("bot_username", "")
-        buttons = []
-        if days_passed and plan_total and bot_username:
-            discuss_url = f"https://t.me/{bot_username}?start=discuss_{task_id}_{days_passed}"
-            buttons.append(InlineKeyboardButton("💬 Discuss", url=discuss_url))
-        if bot_username:
-            menu_url = f"https://t.me/{bot_username}?start=menu"
-            buttons.append(InlineKeyboardButton("📋 Menu", url=menu_url))
-        if buttons:
-            last_markup = InlineKeyboardMarkup([buttons])
-
-        last_sent = None
-        for i, part in enumerate(parts):
-            is_last = i == len(parts) - 1
-            markup = last_markup if is_last else None
-            try:
-                last_sent = await _application.bot.send_message(chat_id=user_id, text=part, parse_mode=ParseMode.MARKDOWN, reply_markup=markup)
-            except BadRequest as e:
-                logger.error(f"Failed to send task result with markdown: {e}")
-                last_sent = await _application.bot.send_message(chat_id=user_id, text=strip_markdown(part), reply_markup=markup)
-
-        # Store message ID so buttons can be cleared when user opens menu
-        if last_sent and last_markup:
-            pending = _application.bot_data.setdefault("pending_task_buttons", {})
-            pending[user_id] = (last_sent.chat_id, last_sent.message_id)
+        await _send_task_result(task_id, user_id, prompt, response, chat, days_passed, plan_total, task_hashtag, pool)
 
     job_id = str(task_id)
     # interval is a comma-separated list of day abbreviations, e.g. "mon,wed,fri"
     _scheduler.add_job(task_wrapper, 'cron', day_of_week=interval, hour=hour, minute=minute, id=job_id, replace_existing=True)
+
+
+async def retry_task_handler(update, context):
+    """Handle the 'Try Again' button on a failed task delivery."""
+    query = update.callback_query
+    await query.answer()
+
+    raw = _safe_callback_data(query.data)
+    if raw is None:
+        return
+    try:
+        task_id = int(raw)
+    except (ValueError, TypeError):
+        return
+
+    if not _application:
+        return
+
+    pool = _application.bot_data.get("db_pool")
+    if not pool:
+        return
+
+    task = await get_task_by_id(pool, task_id)
+    if not task:
+        await query.edit_message_text(_("⚠️ Task not found."))
+        return
+
+    user_id = task["user_id"]
+    # Verify the clicking user owns this task
+    if update.effective_user.id != user_id:
+        await query.answer(_("This is not your task."), show_alert=True)
+        return
+
+    prompt = task["prompt"]
+    plan_json = task.get("plan_json")
+    start_date = task.get("start_date")
+    interval = _normalize_interval(task["interval"])
+    task_hashtag = task.get("hashtag") or f"#Task{task_id}"
+
+    # Show loading state
+    await query.edit_message_text(_("🔄 Retrying..."))
+
+    target_prompt, days_passed, plan_total = _build_target_prompt(prompt, plan_json, start_date, interval)
+
+    if target_prompt is None:
+        await query.edit_message_text(f"🎉 *Plan Complete!* {task_hashtag}", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    user = await get_user(pool, user_id)
+    response, chat = await _generate_task_content(task_id, user_id, target_prompt, pool, user)
+
+    if not response or not response.text:
+        error_text = (
+            f"⚠️ {task_hashtag}\n"
+            f"Retry failed for _{prompt[:50]}_.\n\n"
+            f"The task will try again at the next scheduled time."
+        )
+        retry_keyboard = InlineKeyboardMarkup([
+            [InlineKeyboardButton(_("🔄 Try Again"), callback_data=f"TASK_RETRY#{task_id}")]
+        ])
+        try:
+            await query.edit_message_text(error_text, parse_mode=ParseMode.MARKDOWN, reply_markup=retry_keyboard)
+        except BadRequest:
+            await query.edit_message_text(strip_markdown(error_text), reply_markup=retry_keyboard)
+        return
+
+    # Remove the error message buttons (mark as resolved)
+    try:
+        day_info = f" (Day {days_passed}/{plan_total})" if days_passed and plan_total else ""
+        await query.edit_message_text(f"✅ {task_hashtag}{day_info} — content delivered.", parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        pass
+
+    await _send_task_result(task_id, user_id, prompt, response, chat, days_passed, plan_total, task_hashtag, pool)
