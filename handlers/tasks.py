@@ -291,7 +291,7 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Generate Plan (structured output — returns parsed dict directly)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    msg = await query.edit_message_text(_("Generating plan..."))
+    await query.edit_message_text(_("Generating plan..."))
     api_key = await get_api_key(context, user_id)
     provider_name = context.user_data.get("active_provider", "gemini")
     model_name = context.user_data.get("model_name")

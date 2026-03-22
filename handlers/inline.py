@@ -6,7 +6,6 @@ from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import ContextTypes
 
 from handlers.common import _get_pool
-from handlers.states import *
 from chat.session import ChatSession
 from database.database import get_user
 

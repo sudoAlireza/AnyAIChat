@@ -200,7 +200,6 @@ async def check_url_monitors_task():
         return
 
     monitors = await get_active_monitors(pool)
-    now = datetime.now()
 
     for m in monitors:
         try:

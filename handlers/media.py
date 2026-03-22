@@ -37,7 +37,7 @@ async def generate_image_handler(update: Update, context: ContextTypes.DEFAULT_T
         provider_name = context.user_data.get("active_provider", "gemini")
         chat = ChatSession(provider_name=provider_name, api_key=api_key, model_name=None)
         await chat.start_chat()
-        response = await chat.generate_image(prompt)
+        await chat.generate_image(prompt)
 
         await msg.edit_text(_("🎨 Image generation requested for: ") + prompt + _("\n\n(Note: Imagen API integration is experimental and may require specific account permissions)"))
     except Exception as e:

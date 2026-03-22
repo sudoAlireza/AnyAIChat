@@ -155,7 +155,7 @@ class TestSendMessage:
             model_name="mock-model-1",
         )
         assert session.get_history_length() == 0
-        response = await session.send_message("Hello")
+        await session.send_message("Hello")
         # History should have user message + assistant response
         assert session.get_history_length() == 2
         dicts = session.get_history_as_dicts()

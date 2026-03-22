@@ -89,6 +89,11 @@ from database.database import (
     update_user_api_key,
     update_user_settings,
     _generate_hashtag,
+    add_feedback,
+    create_task,
+    delete_conversation_by_id,
+    get_user_task_hashtags,
+    get_user_tasks,
 )
 from helpers.helpers import (
     conversations_page_content,
@@ -1193,7 +1198,6 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Store as sorted comma-separated string: "mon,wed,fri"
     interval = ",".join(d for d in _ALL_DAYS if d in selected)
-    user_id = update.effective_user.id
     prompt = context.user_data.get("task_prompt")
     run_time = context.user_data.get("task_time")
 
@@ -1201,7 +1205,7 @@ async def handle_task_interval(update: Update, context: ContextTypes.DEFAULT_TYP
 
     # Generate Plan (structured output — returns parsed dict directly)
     await context.bot.send_chat_action(chat_id=update.effective_chat.id, action="typing")
-    msg = await query.edit_message_text(_("Generating plan..."))
+    await query.edit_message_text(_("Generating plan..."))
     api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
     gemini = GeminiChat(api_key)
     parsed = await gemini.generate_plan(prompt, num_days=num_days)
@@ -2076,7 +2080,7 @@ async def generate_image_handler(update: Update, context: ContextTypes.DEFAULT_T
     try:
         api_key = context.user_data.get("api_key") or GEMINI_API_TOKEN
         gemini = GeminiChat(api_key)
-        response = await gemini.generate_image(prompt)
+        await gemini.generate_image(prompt)
 
         await msg.edit_text(_("🎨 Image generation requested for: ") + prompt + _("\n\n(Note: Imagen API integration is experimental and may require specific account permissions)"))
     except Exception as e:
@@ -3548,7 +3552,6 @@ async def check_url_monitors_task():
         return
 
     monitors = await get_active_monitors(pool)
-    now = datetime.now()
 
     for m in monitors:
         try:

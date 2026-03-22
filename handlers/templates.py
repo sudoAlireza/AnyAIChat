@@ -140,7 +140,7 @@ async def start_translation_handler(update: Update, context: ContextTypes.DEFAUL
 
     user_id = update.effective_user.id
     pool = _get_pool(context)
-    user_data = await get_user(pool, user_id)
+    await get_user(pool, user_id)
     api_key = await get_api_key(context, user_id)
 
     provider_name = context.user_data.get("active_provider", "gemini")
