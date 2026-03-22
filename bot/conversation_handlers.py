@@ -28,6 +28,7 @@ from telegram import (
 )
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
+from telegram.ext import ContextTypes
 from tenacity import RetryError
 
 from config import (
