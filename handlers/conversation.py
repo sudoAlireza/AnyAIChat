@@ -21,8 +21,8 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from handlers.common import restricted, _, _get_pool, _clear_last_ai_buttons, _current_user_id, get_api_key
-from handlers.states import CONVERSATION, CHOOSING
+from handlers.common import restricted, _, _get_pool, _clear_last_ai_buttons, get_api_key
+from handlers.states import CONVERSATION
 from chat.session import ChatSession
 from config import (
     MAX_MESSAGE_LENGTH,

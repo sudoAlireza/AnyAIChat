@@ -1,6 +1,5 @@
 """Settings menu, model selection, storage, persona, toggles, shortcuts, pinned context, and language handlers."""
 
-import re
 import logging
 
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
@@ -68,9 +67,9 @@ async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
     keyboard = [
         [InlineKeyboardButton(f"\U0001f916 Model: {current_model}", callback_data="open_models_menu")],
         [InlineKeyboardButton(f"\U0001f504 Provider: {provider_name.title()}", callback_data="Provider_Menu")],
-        [InlineKeyboardButton(f"\U0001f3ad Custom Persona", callback_data="Persona_Menu")],
-        [InlineKeyboardButton(f"\U0001f4cc Pinned Context", callback_data="Pinned_Context_Menu")],
-        [InlineKeyboardButton(f"\u26a1 Quick Shortcuts", callback_data="Shortcuts_Menu")],
+        [InlineKeyboardButton("\U0001f3ad Custom Persona", callback_data="Persona_Menu")],
+        [InlineKeyboardButton("\U0001f4cc Pinned Context", callback_data="Pinned_Context_Menu")],
+        [InlineKeyboardButton("\u26a1 Quick Shortcuts", callback_data="Shortcuts_Menu")],
     ]
 
     # Only show toggles if the active provider supports them
@@ -234,7 +233,7 @@ async def set_provider_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     provider = ProviderRegistry().get(provider_name)
 
     # Restore the user's saved model for this provider, or fall back to provider default
-    from database.database import get_user_api_key, get_user_provider_settings
+    from database.database import get_user_provider_settings
     saved = await get_user_provider_settings(pool, user_id, provider_name)
     if saved and saved.get("model_name"):
         model_name = saved["model_name"]

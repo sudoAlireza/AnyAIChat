@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-from providers.base import ChatResponse
 
 
 def format_sources(sources: list[dict]) -> str:

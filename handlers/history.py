@@ -15,7 +15,7 @@ from datetime import datetime
 
 from handlers.common import restricted, _, _get_pool, get_active_provider_name
 from handlers.states import (
-    CHOOSING, CONVERSATION, CONVERSATION_HISTORY, SEARCH_INPUT, TAGS_INPUT,
+    CHOOSING, CONVERSATION_HISTORY, SEARCH_INPUT, TAGS_INPUT,
 )
 from config import ITEMS_PER_PAGE
 from database.database import (
@@ -533,7 +533,7 @@ async def share_conversation_handler(update: Update, context: ContextTypes.DEFAU
                 text += f"_... and {remaining} more messages_\n"
             break
 
-    text += f"\n_Shared from AI Chat Bot_"
+    text += "\n_Shared from AI Chat Bot_"
 
     parts_list = split_message(text)
     for part in parts_list:
@@ -571,7 +571,7 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
     # Per-user token usage from database
     token_stats = await get_user_token_stats(pool, user_id)
     if token_stats and token_stats.get("total_tokens"):
-        text += f"\n\n\U0001f522 *Token Usage (All Time)*\n"
+        text += "\n\n\U0001f522 *Token Usage (All Time)*\n"
         text += f"Total: {token_stats['total_tokens']:,} tokens ({token_stats['total_requests']} requests)\n"
         text += f"  Input: {token_stats['prompt_tokens']:,}\n"
         text += f"  Output: {token_stats['completion_tokens']:,}\n"
@@ -587,12 +587,12 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
         if token_stats.get('thinking_tokens'):
             text += f"  \U0001f4ad Thinking: {token_stats['thinking_tokens']:,}\n"
 
-        text += f"\n\U0001f4c5 *Today*\n"
+        text += "\n\U0001f4c5 *Today*\n"
         text += f"  Tokens: {token_stats.get('today_tokens', 0):,}\n"
         if token_stats.get('today_cached'):
             text += f"  Cached: {token_stats['today_cached']:,}\n"
 
-        text += f"\n\U0001f4c6 *Last 7 Days*\n"
+        text += "\n\U0001f4c6 *Last 7 Days*\n"
         text += f"  Tokens: {token_stats.get('week_tokens', 0):,}\n"
         if token_stats.get('week_cached'):
             text += f"  Cached: {token_stats['week_cached']:,}\n"
@@ -604,13 +604,13 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
     # Estimated cost
     total_cost = await get_user_total_cost(pool, user_id)
     if total_cost:
-        text += f"\n\U0001f4b0 *Estimated Cost*\n"
+        text += "\n\U0001f4b0 *Estimated Cost*\n"
         text += f"  Total: ${total_cost:.4f}\n"
 
     # Per-provider breakdown
     provider_stats = await get_user_token_stats_by_provider(pool, user_id)
     if provider_stats:
-        text += f"\n\U0001f4ca *Per-Provider Breakdown*\n"
+        text += "\n\U0001f4ca *Per-Provider Breakdown*\n"
         for ps in provider_stats:
             name = ps["provider"].title()
             tokens = ps["total_tokens"]

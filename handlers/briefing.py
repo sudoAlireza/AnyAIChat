@@ -268,7 +268,7 @@ async def daily_briefing_task():
                 briefing += "\n"
 
             briefing += f"💬 Total conversations: {stats['conversations']}\n"
-            briefing += f"\n✨ Have a productive day!"
+            briefing += "\n✨ Have a productive day!"
 
             await _application.bot.send_message(chat_id=user_id, text=briefing, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
@@ -306,7 +306,7 @@ async def weekly_summary_task():
             summary += f"📋 Active Tasks: {stats['active_tasks']}\n"
             summary += f"⏰ Reminders completed: {stats['completed_reminders']}/{stats['total_reminders']}\n"
             summary += f"📚 Knowledge Docs: {stats['knowledge_docs']}\n"
-            summary += f"\nKeep up the great work! 🎯"
+            summary += "\nKeep up the great work! 🎯"
 
             await _application.bot.send_message(chat_id=user_id, text=summary, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:

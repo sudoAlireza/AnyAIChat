@@ -48,27 +48,27 @@ def split_message(text: str, limit: int = 4000) -> list:
     """Splits a long message into multiple messages, respecting word boundaries."""
     if len(text) <= limit:
         return [text]
-    
+
     parts = []
     while text:
         if len(text) <= limit:
             parts.append(text)
             break
-        
+
         # Find the last newline within the limit
         split_at = text.rfind('\n', 0, limit)
-        
+
         # If no newline, find the last space
         if split_at == -1:
             split_at = text.rfind(' ', 0, limit)
-        
+
         # If still no good split point, just cut at the limit
         if split_at == -1:
             split_at = limit
-            
+
         parts.append(text[:split_at].strip())
         text = text[split_at:].strip()
-        
+
     return parts
 
 def escape_markdown_v2(text: str) -> str:

@@ -7,7 +7,7 @@ import os
 import logging
 import time
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Optional
+from typing import Any, Callable
 
 from google import genai
 from google.genai import types
@@ -18,21 +18,14 @@ from google.api_core.exceptions import (
     PermissionDenied,
     NotFound,
 )
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from config import (
-    GEMINI_MODEL,
     MAX_HISTORY_MESSAGES,
     SAFETY_OVERRIDE,
     CACHE_TTL_SECONDS,
     CACHE_MIN_TOKENS,
-    RAG_TOP_K,
 )
 from providers.base import (
-    AIProvider,
-    ImageGenerationProvider,
-    EmbeddingProvider,
-    StructuredOutputProvider,
     Capability,
     ModelInfo,
     ChatMessage,

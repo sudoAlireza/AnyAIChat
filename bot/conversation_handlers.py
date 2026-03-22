@@ -64,7 +64,6 @@ from database.database import (
     get_conversations_by_tag,
     get_conversation_tags,
     get_pending_reminders,
-    get_shortcut_by_command,
     get_task_by_id,
     get_user,
     get_user_bookmarks,
@@ -93,7 +92,6 @@ from database.database import (
 )
 from helpers.helpers import (
     conversations_page_content,
-    escape_markdown_v2,
     split_message,
     strip_markdown,
 )
@@ -608,7 +606,7 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
                     csv_summary = f"CSV file with {len(data_rows)} rows and {len(headers)} columns.\n"
                     csv_summary += f"Columns: {', '.join(headers[:20])}\n"
                     if data_rows:
-                        csv_summary += f"Sample (first 3 rows):\n"
+                        csv_summary += "Sample (first 3 rows):\n"
                         for row in data_rows[:3]:
                             csv_summary += f"  {', '.join(row[:10])}\n"
                     prompt = f"{prompt or 'Analyze this data'}\n\n[CSV Data Summary]\n{csv_summary}"
@@ -1584,9 +1582,9 @@ async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     keyboard = [
         [InlineKeyboardButton(f"🤖 Model: {current_model}", callback_data="open_models_menu")],
-        [InlineKeyboardButton(f"🎭 Custom Persona", callback_data="Persona_Menu")],
-        [InlineKeyboardButton(f"📌 Pinned Context", callback_data="Pinned_Context_Menu")],
-        [InlineKeyboardButton(f"⚡ Quick Shortcuts", callback_data="Shortcuts_Menu")],
+        [InlineKeyboardButton("🎭 Custom Persona", callback_data="Persona_Menu")],
+        [InlineKeyboardButton("📌 Pinned Context", callback_data="Pinned_Context_Menu")],
+        [InlineKeyboardButton("⚡ Quick Shortcuts", callback_data="Shortcuts_Menu")],
         [InlineKeyboardButton(f"🌐 Web Search: {ws_status}", callback_data="TOGGLE_WEB_SEARCH")],
         [InlineKeyboardButton(f"💭 Thinking: {thinking_status}", callback_data="TOGGLE_THINKING_MODE")],
         [InlineKeyboardButton(f"🖥️ Code Execution: {code_exec_status}", callback_data="TOGGLE_CODE_EXEC")],
@@ -2400,7 +2398,7 @@ async def share_conversation_handler(update: Update, context: ContextTypes.DEFAU
                 text += f"_... and {remaining} more messages_\n"
             break
 
-    text += f"\n_Shared from Gemini Chat Bot_"
+    text += "\n_Shared from Gemini Chat Bot_"
 
     parts_list = split_message(text)
     for part in parts_list:
@@ -2509,7 +2507,7 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
     # Per-user token usage from database
     token_stats = await get_user_token_stats(pool, user_id)
     if token_stats and token_stats.get("total_tokens"):
-        text += f"\n\n🔢 *Token Usage (All Time)*\n"
+        text += "\n\n🔢 *Token Usage (All Time)*\n"
         text += f"Total: {token_stats['total_tokens']:,} tokens ({token_stats['total_requests']} requests)\n"
         text += f"  Input: {token_stats['prompt_tokens']:,}\n"
         text += f"  Output: {token_stats['completion_tokens']:,}\n"
@@ -2525,12 +2523,12 @@ async def usage_dashboard_handler(update: Update, context: ContextTypes.DEFAULT_
         if token_stats.get('thinking_tokens'):
             text += f"  💭 Thinking: {token_stats['thinking_tokens']:,}\n"
 
-        text += f"\n📅 *Today*\n"
+        text += "\n📅 *Today*\n"
         text += f"  Tokens: {token_stats.get('today_tokens', 0):,}\n"
         if token_stats.get('today_cached'):
             text += f"  Cached: {token_stats['today_cached']:,}\n"
 
-        text += f"\n📆 *Last 7 Days*\n"
+        text += "\n📆 *Last 7 Days*\n"
         text += f"  Tokens: {token_stats.get('week_tokens', 0):,}\n"
         if token_stats.get('week_cached'):
             text += f"  Cached: {token_stats['week_cached']:,}\n"
@@ -2833,7 +2831,7 @@ async def weekly_summary_task():
             summary += f"📋 Active Tasks: {stats['active_tasks']}\n"
             summary += f"⏰ Reminders completed: {stats['completed_reminders']}/{stats['total_reminders']}\n"
             summary += f"📚 Knowledge Docs: {stats['knowledge_docs']}\n"
-            summary += f"\nKeep up the great work! 🎯"
+            summary += "\nKeep up the great work! 🎯"
 
             await _application.bot.send_message(chat_id=user_id, text=summary, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:
@@ -3619,7 +3617,7 @@ async def daily_briefing_task():
                 briefing += "\n"
 
             briefing += f"💬 Total conversations: {stats['conversations']}\n"
-            briefing += f"\n✨ Have a productive day!"
+            briefing += "\n✨ Have a productive day!"
 
             await _application.bot.send_message(chat_id=user_id, text=briefing, parse_mode=ParseMode.MARKDOWN)
         except Exception as e:

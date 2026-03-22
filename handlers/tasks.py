@@ -13,14 +13,13 @@ from telegram.error import BadRequest
 
 from handlers.common import restricted, _, _get_pool, get_api_key
 from handlers.states import (
-    CHOOSING, CONVERSATION, TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS,
+    TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS,
     TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN,
 )
 from chat.session import ChatSession
 from database.database import (
     create_task, get_user_tasks, get_user, get_user_task_hashtags,
-    delete_task_by_hashtag, mark_task_completed, get_task_by_id,
-    _generate_hashtag, record_token_usage,
+    delete_task_by_hashtag, mark_task_completed, _generate_hashtag, record_token_usage,
 )
 from helpers.helpers import strip_markdown, split_message
 

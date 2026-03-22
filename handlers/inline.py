@@ -5,9 +5,8 @@ import logging
 from telegram import Update, InlineQueryResultArticle, InputTextMessageContent
 from telegram.ext import ContextTypes
 
-from handlers.common import _get_pool, get_api_key
+from handlers.common import _get_pool
 from handlers.states import *
-from config import GEMINI_MODEL
 from chat.session import ChatSession
 from database.database import get_user
 

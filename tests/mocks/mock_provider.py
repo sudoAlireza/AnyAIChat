@@ -1,5 +1,5 @@
 """Mock AI provider for testing."""
-from providers.base import Capability, ModelInfo, ChatMessage, ChatResponse
+from providers.base import Capability, ModelInfo, ChatResponse
 
 class MockProvider:
     provider_name = "mock"

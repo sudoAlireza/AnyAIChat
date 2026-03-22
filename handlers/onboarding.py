@@ -15,7 +15,7 @@ from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from telegram.ext import ContextTypes
 
-from handlers.common import restricted, _, _get_pool, _clear_last_ai_buttons, _current_user_id, get_api_key
+from handlers.common import restricted, _, _get_pool, get_api_key
 from handlers.states import (
     CHOOSING,
     CONVERSATION,

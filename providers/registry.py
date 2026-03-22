@@ -3,9 +3,8 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
 
-from providers.base import AIProvider, Capability
+from providers.base import AIProvider
 
 logger = logging.getLogger(__name__)
 

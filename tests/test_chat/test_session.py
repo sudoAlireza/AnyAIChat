@@ -1,7 +1,7 @@
 """Tests for chat.session.ChatSession."""
 import pytest
 
-from providers.base import ChatMessage, ChatResponse
+from providers.base import ChatResponse
 from providers.registry import ProviderRegistry
 from chat.session import ChatSession
 from tests.mocks.mock_provider import MockProvider

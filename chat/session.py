@@ -411,7 +411,7 @@ class ChatSession:
                         if key_row and key_row.get("api_key"):
                             gemini_key = key_row["api_key"]
                     if gemini_key:
-                        logger.info(f"Falling back to Gemini for plan generation")
+                        logger.info("Falling back to Gemini for plan generation")
                         fallback = ChatSession(
                             provider_name="gemini",
                             api_key=gemini_key,
@@ -424,7 +424,7 @@ class ChatSession:
             except Exception as fb_err:
                 logger.warning(f"Gemini fallback for plan also failed: {fb_err}")
 
-        logger.error(f"All plan generation attempts failed")
+        logger.error("All plan generation attempts failed")
         return {"title": "Plan", "plan": []}
 
     async def generate_image(self, prompt: str) -> Any:
@@ -450,7 +450,6 @@ class ChatSession:
     async def parse_voice_command_from_file(self, file_path: str) -> dict:
         """Transcribe audio and parse command (Gemini-specific, uses file upload)."""
         if self.provider_name == "gemini" and hasattr(self.provider, "upload_file"):
-            from schemas import VOICE_COMMAND_SCHEMA
             instruction = (
                 "Listen to this audio and determine if the user wants to perform an action. "
                 "Actions include: 'start_task' (for 30-day plans), 'set_reminder', 'generate_image', or 'none'. "
