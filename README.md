@@ -1,5 +1,7 @@
 # AnyAIChat - Multi-Provider AI Telegram Bot
 
+> **Note:** This project has been rebranded from GeminiBot to AnyAIChat to better reflect its multi-provider capabilities. The bot now supports any major AI provider, not just Google Gemini.
+
 AnyAIChat is a feature-rich Telegram bot that supports multiple AI providers including **Google Gemini**, **OpenAI**, **Anthropic (Claude)**, and **OpenAI-compatible endpoints** (OpenRouter, Groq, Together AI). Users can switch providers, bring their own API keys, and enjoy advanced features like streaming responses, vision, knowledge base with RAG, task scheduling, and more.
 
 [Set-up Tutorial on Medium](https://medium.com/@alirezafathi/how-to-use-google-gemini-ai-in-your-personal-telegram-bot-on-your-own-server-b1f0b9de2bdd)
