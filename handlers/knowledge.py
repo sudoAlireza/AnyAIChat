@@ -70,7 +70,8 @@ async def handle_knowledge_input(update: Update, context: ContextTypes.DEFAULT_T
     try:
         pool = _get_pool(context)
 
-        # File upload and processing is Gemini-specific for now
+        # DEPRECATED: File upload and processing is Gemini-specific for now.
+        # TODO: Add provider-agnostic file processing via ChatSession.
         if provider_name == "gemini":
             from providers.registry import ProviderRegistry
             provider = ProviderRegistry().get("gemini")

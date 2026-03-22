@@ -24,7 +24,7 @@ async def inline_query_handler(update: Update, context: ContextTypes.DEFAULT_TYP
     pool = _get_pool(context)
     user = await get_user(pool, user_id)
 
-    api_key = user.get('api_key') if user else None
+    api_key = user.get('api_key') if user else None  # DEPRECATED: use get_user_api_key() for per-provider keys
     if not api_key:
         results = [InlineQueryResultArticle(
             id="no_key",

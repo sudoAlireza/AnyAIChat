@@ -88,7 +88,7 @@ class ChatSession:
                     content=entry["content"],
                     metadata=entry.get("metadata", {}),
                 ))
-            # Old Gemini format
+            # DEPRECATED: Old Gemini format (remove once all histories are migrated)
             elif "parts" in entry:
                 role = entry["role"]
                 if role == "model":

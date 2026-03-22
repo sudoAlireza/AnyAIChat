@@ -79,7 +79,7 @@ def restricted(func):
                 if user:
                     active_provider = user.get("active_provider") or "gemini"
                     context.user_data["active_provider"] = active_provider
-                    context.user_data.setdefault("api_key", user.get("api_key"))
+                    context.user_data.setdefault("api_key", user.get("api_key"))  # DEPRECATED: legacy single-key field
                     context.user_data.setdefault("web_search", bool(user.get("grounding")))
                     context.user_data.setdefault("system_instruction", user.get("system_instruction"))
                     # Load per-provider model
@@ -159,13 +159,13 @@ async def get_api_key(context: ContextTypes.DEFAULT_TYPE, user_id: int) -> str:
         context.user_data["api_key"] = provider_key["api_key"]
         return provider_key["api_key"]
 
-    # 3. Legacy key from users table (works for gemini)
+    # DEPRECATED fallback 3: Legacy key from users table (works for gemini only)
     user = await get_user(pool, user_id)
     if user and user.get("api_key"):
         context.user_data[cache_key] = user["api_key"]
         context.user_data["api_key"] = user["api_key"]
         return user["api_key"]
 
-    # 4. Env var fallback
+    # DEPRECATED fallback 4: Env var fallback (Gemini only)
     from config import GEMINI_API_TOKEN
     return GEMINI_API_TOKEN

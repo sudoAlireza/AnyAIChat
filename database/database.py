@@ -740,7 +740,13 @@ async def get_task_by_id(pool: DatabasePool, task_id: int):
 # --- User Functions ---
 
 async def get_user(pool: DatabasePool, user_id):
-    """Retrieve user settings, decrypting the API key."""
+    """Retrieve user settings, decrypting the API key.
+
+    DEPRECATED fields in returned dict:
+    - 'api_key': Use get_user_api_key(pool, user_id, provider) for per-provider keys.
+    - 'model_name': Use get_user_provider_settings(pool, user_id, provider) for per-provider models.
+    - 'grounding': Legacy name for web_search toggle. Field name kept for DB compat.
+    """
     row = await pool.execute_fetch_one(
         "SELECT user_id, api_key, model_name, grounding, system_instruction, language, "
         "pinned_context, briefing_time, thinking_mode, code_execution, active_provider "
@@ -768,7 +774,7 @@ async def get_user(pool: DatabasePool, user_id):
 
 
 async def update_user_api_key(pool: DatabasePool, user_id, api_key):
-    """Update or create user API key, encrypting before storage."""
+    """DEPRECATED: Updates legacy users.api_key column. Use set_user_api_key() for per-provider keys."""
     encrypted_key = encrypt_api_key(api_key)
     sql = """ INSERT INTO users(user_id, api_key)
               VALUES(?,?)
@@ -778,7 +784,12 @@ async def update_user_api_key(pool: DatabasePool, user_id, api_key):
 
 
 async def update_user_settings(pool: DatabasePool, user_id, model_name=None, grounding=None, system_instruction=None, language=None, pinned_context=None, briefing_time=None, thinking_mode=None, code_execution=None):
-    """Update user settings."""
+    """Update user settings.
+
+    DEPRECATED params:
+    - model_name: Also call set_user_provider_settings() for per-provider model storage.
+    - grounding: Legacy name for web_search toggle.
+    """
     updates = []
     params = []
 

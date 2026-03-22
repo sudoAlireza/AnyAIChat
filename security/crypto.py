@@ -41,7 +41,7 @@ def decrypt_api_key(encrypted_key: str) -> str:
     try:
         return f.decrypt(encrypted_key.encode()).decode()
     except InvalidToken:
-        # Key might be stored in plaintext (legacy data before encryption was added)
+        # DEPRECATED: Key might be stored in plaintext (legacy data before encryption was added)
         logger.warning("Failed to decrypt API key - returning as-is (possibly plaintext legacy key)")
         return encrypted_key
 

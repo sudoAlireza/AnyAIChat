@@ -60,7 +60,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     pool = _get_pool(context)
     user = await get_user(pool, user_id)
 
-    if not user or not user.get("api_key"):
+    if not user or not user.get("api_key"):  # DEPRECATED: uses legacy api_key field for new-user check
         # New user — ask for API key (silently default to gemini provider)
         await update.message.reply_text(_(
             "Welcome! To use this bot, you need to provide your own API Key.\n\n"
@@ -75,8 +75,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
         return API_KEY_INPUT
 
     # Sync context with DB settings
-    context.user_data["api_key"] = user["api_key"]
-    context.user_data["web_search"] = bool(user["grounding"])
+    context.user_data["api_key"] = user["api_key"]  # DEPRECATED: legacy single-key field
+    context.user_data["web_search"] = bool(user["grounding"])  # DEPRECATED: 'grounding' is legacy field name
     context.user_data["system_instruction"] = user.get("system_instruction")
     active_provider = user.get("active_provider", "gemini")
     context.user_data["active_provider"] = active_provider
@@ -247,7 +247,7 @@ async def handle_api_key(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
     from database.database import set_user_api_key
     await set_user_api_key(pool, user_id, provider_name, api_key)
 
-    # Also update legacy users table for Gemini (backward compat)
+    # DEPRECATED: Also update legacy users.api_key for Gemini (backward compat, remove when legacy column dropped)
     if provider_name == "gemini":
         await update_user_api_key(pool, user_id, api_key)
 
@@ -327,10 +327,11 @@ async def start_over(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
     context.user_data["conversation_id"] = None
 
     # Refresh user data from DB
+    # Refresh user data from DB
     user = await get_user(pool, user_id)
     if user:
-        context.user_data["api_key"] = user["api_key"]
-        context.user_data["web_search"] = bool(user["grounding"])
+        context.user_data["api_key"] = user["api_key"]  # DEPRECATED: legacy single-key field
+        context.user_data["web_search"] = bool(user["grounding"])  # DEPRECATED: 'grounding' is legacy field name
         context.user_data["system_instruction"] = user.get("system_instruction")
         active_provider = user.get("active_provider", "gemini")
         context.user_data["active_provider"] = active_provider

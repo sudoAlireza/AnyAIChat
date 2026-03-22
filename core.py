@@ -1,3 +1,7 @@
+# DEPRECATED: This entire module is deprecated.
+# Replaced by: chat/session.py (ChatSession) + providers/ (provider registry)
+# TODO: Remove once all references are migrated. No active code imports from this file.
+
 import json
 import os
 import logging

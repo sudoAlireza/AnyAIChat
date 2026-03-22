@@ -1,3 +1,7 @@
+# DEPRECATED: This entire module is deprecated.
+# Replaced by: handlers/ (modular handler files)
+# TODO: Remove once confirmed no external scripts depend on it.
+
 import io
 import os
 import re

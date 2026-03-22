@@ -45,8 +45,8 @@ async def open_settings_menu(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     logger.info(f"Opening settings menu for user {user_id}")
 
-    current_model = user['model_name'] if user and user.get('model_name') else (context.user_data.get("model_name") or GEMINI_MODEL)
-    web_search = bool(user['grounding']) if user and user.get('grounding') is not None else context.user_data.get("web_search", False)
+    current_model = user['model_name'] if user and user.get('model_name') else (context.user_data.get("model_name") or GEMINI_MODEL)  # DEPRECATED: legacy model_name field
+    web_search = bool(user['grounding']) if user and user.get('grounding') is not None else context.user_data.get("web_search", False)  # DEPRECATED: 'grounding' is legacy field name
 
     ws_status = "\u2705 Enabled" if web_search else "\u274c Disabled"
 
@@ -456,7 +456,7 @@ async def set_model_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     pool = _get_pool(context)
     provider_name = get_active_provider_name(context)
 
-    # Save to legacy users table (for backward compat)
+    # DEPRECATED: Save to legacy users.model_name (backward compat, remove when legacy column dropped)
     await update_user_settings(pool, user_id, model_name=model_name)
     # Save per-provider so switching back restores this choice
     from database.database import set_user_provider_settings
@@ -669,7 +669,7 @@ async def toggle_web_search(update: Update, context: ContextTypes.DEFAULT_TYPE) 
     logger.info(f"Toggling web search to {new_status} for user {user_id}")
 
     pool = _get_pool(context)
-    await update_user_settings(pool, user_id, grounding=int(new_status))
+    await update_user_settings(pool, user_id, grounding=int(new_status))  # DEPRECATED: 'grounding' is legacy field name for web_search
     context.user_data["web_search"] = new_status
 
     await open_settings_menu(update, context)

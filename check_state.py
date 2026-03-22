@@ -1,3 +1,6 @@
+# DEPRECATED: Debug utility script. References deprecated core.py and bot/conversation_handlers.py.
+# TODO: Remove this file.
+
 import sys
 import os
 
