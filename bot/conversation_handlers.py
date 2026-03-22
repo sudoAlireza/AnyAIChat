@@ -2,101 +2,107 @@
 # Replaced by: handlers/ (modular handler files)
 # TODO: Remove once confirmed no external scripts depend on it.
 
-import io
-import os
-import re
-import csv
-import hashlib
-import logging
-import uuid
-import math
-import json
 import asyncio
 import contextvars
-from functools import wraps
+import csv
+import hashlib
+import io
+import json
+import logging
+import math
+import os
+import re
+import uuid
 from datetime import datetime, timedelta
+from functools import wraps
+
 import httpx
-
-# Context variable to propagate user_id into all log records within a handler
-_current_user_id = contextvars.ContextVar('current_user_id', default='-')
-
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, InlineQueryResultArticle, InputTextMessageContent
-from telegram.ext import ContextTypes
+import PIL.Image
+from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InlineQueryResultArticle,
+    InputTextMessageContent,
+    Update,
+)
 from telegram.constants import ParseMode
 from telegram.error import BadRequest
 from tenacity import RetryError
-from google.api_core.exceptions import ResourceExhausted, ServiceUnavailable
-import PIL.Image
 
-from core import GeminiChat
 from config import (
-    DATABASE_PATH, MAX_MESSAGE_LENGTH, ITEMS_PER_PAGE,
-    AUTHORIZED_USER, ALLOW_ALL_USERS, GEMINI_API_TOKEN,
-    GEMINI_MODEL, CONVERSATION_WARNING_THRESHOLD,
+    ALLOW_ALL_USERS,
+    AUTHORIZED_USER,
     CONVERSATION_AUTO_RESET_THRESHOLD,
+    CONVERSATION_WARNING_THRESHOLD,
+    GEMINI_API_TOKEN,
+    GEMINI_MODEL,
+    ITEMS_PER_PAGE,
+    MAX_MESSAGE_LENGTH,
 )
+from core import GeminiChat
 from database.database import (
-    create_conversation,
-    get_user_conversation_count,
-    select_conversations_by_user,
-    select_conversation_by_id,
-    delete_conversation_by_id,
-    create_task,
-    get_user_tasks,
-    get_user,
-    update_user_api_key,
-    update_user_settings,
-    add_knowledge,
-    get_user_knowledge,
-    delete_knowledge,
-    add_reminder,
-    get_user_reminders,
-    delete_reminder,
-    get_pending_reminders,
-    update_reminder_status,
-    search_conversations,
-    add_conversation_tag,
-    get_user_tags,
-    get_conversations_by_tag,
-    get_conversation_tags,
-    remove_conversation_tag,
-    add_shortcut,
-    get_user_shortcuts,
-    delete_shortcut,
-    get_shortcut_by_command,
-    get_user_stats,
     add_bookmark,
-    get_user_bookmarks,
-    delete_bookmark,
+    add_conversation_tag,
+    add_knowledge_with_content,
     add_prompt,
-    get_user_prompts,
-    delete_prompt,
-    add_feedback,
-    mark_task_completed,
-    get_task_by_id,
-    get_user_task_hashtags,
-    delete_task_by_hashtag,
-    _generate_hashtag,
+    add_reminder,
+    add_shortcut,
     add_url_monitor,
-    get_user_monitors,
+    create_conversation,
+    create_conversation_branch,
+    delete_bookmark,
+    delete_chunks_by_knowledge_id,
+    delete_knowledge,
+    delete_prompt,
+    delete_reminder,
+    delete_shortcut,
+    delete_task_by_hashtag,
     delete_url_monitor,
     get_active_monitors,
-    update_monitor_hash,
-    update_conversation_resume,
-    create_conversation_branch,
-    record_token_usage,
+    get_conversations_by_tag,
+    get_conversation_tags,
+    get_pending_reminders,
+    get_shortcut_by_command,
+    get_task_by_id,
+    get_user,
+    get_user_bookmarks,
+    get_user_conversation_count,
+    get_user_knowledge,
+    get_user_monitors,
+    get_user_prompts,
+    get_user_reminders,
+    get_user_shortcuts,
+    get_user_stats,
+    get_user_tags,
     get_user_token_stats,
-    add_knowledge_with_content,
-    delete_chunks_by_knowledge_id,
+    mark_task_completed,
+    record_token_usage,
+    remove_conversation_tag,
     save_knowledge_chunks,
+    search_conversations,
+    select_conversation_by_id,
+    select_conversations_by_user,
+    update_conversation_resume,
+    update_monitor_hash,
+    update_reminder_status,
+    update_user_api_key,
+    update_user_settings,
+    _generate_hashtag,
 )
-from schemas import REMINDER_SCHEMA
-from helpers.code_formatter import format_code_blocks_for_telegram
-from helpers.inline_paginator import InlineKeyboardPaginator
-from helpers.helpers import conversations_page_content, strip_markdown, split_message, escape_markdown_v2
+from helpers.helpers import (
+    conversations_page_content,
+    escape_markdown_v2,
+    split_message,
+    strip_markdown,
+)
 from helpers.sanitize import safe_filename
-from security.rate_limiter import rate_limiter
 from monitoring.metrics import metrics
+from schemas import REMINDER_SCHEMA
+from security.rate_limiter import rate_limiter
+
+# Context variable to propagate user_id into all log records within a handler
+_current_user_id = contextvars.ContextVar('current_user_id', default='-')
 
 # Translation function placeholder (will be set by main.py)
 def _(text):
