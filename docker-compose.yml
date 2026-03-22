@@ -1,8 +1,8 @@
 version: '3.8'
 services:
-  geminibot:
+  anyaichat:
     build: .
-    container_name: geminibot
+    container_name: anyaichat
     labels:
       - "com.centurylinklabs.watchtower.enable=false"
     dns:

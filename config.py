@@ -5,7 +5,7 @@ load_dotenv()
 
 
 # Database
-DATABASE_PATH = os.getenv("DATABASE_PATH", "data/gemini_bot.db")
+DATABASE_PATH = os.getenv("DATABASE_PATH", "data/anyaichat.db")
 
 # Gemini
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")

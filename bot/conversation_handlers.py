@@ -159,7 +159,7 @@ def restricted(func):
             if authorized_users and user_id not in authorized_users:
                 logger.info(f"Unauthorized access denied for {user_id}.")
                 if update.message:
-                    await update.message.reply_text("This is a personal GeminiBot. You are not authorized.")
+                    await update.message.reply_text("This is a personal AnyAIChat. You are not authorized.")
                 elif update.callback_query:
                     await update.callback_query.answer("Unauthorized.", show_alert=True)
                 return

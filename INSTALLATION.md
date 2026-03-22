@@ -1,8 +1,8 @@
-# How to Deploy GeminiBot — Multi-Provider AI Telegram Bot
+# How to Deploy AnyAIChat — Multi-Provider AI Telegram Bot
 
 ## Introduction
 
-GeminiBot has evolved from a simple Gemini chatbot into a full-featured multi-provider AI Telegram bot. It supports **Google Gemini**, **OpenAI (GPT)**, **Anthropic (Claude)**, and **OpenAI-compatible endpoints** (OpenRouter, Groq, Together AI). Users can switch between providers, bring their own API keys, and take advantage of features like streaming, vision, knowledge base with RAG, task scheduling, and more.
+AnyAIChat is a full-featured multi-provider AI Telegram bot that supports **Google Gemini**, **OpenAI (GPT)**, **Anthropic (Claude)**, and **OpenAI-compatible endpoints** (OpenRouter, Groq, Together AI). Users can switch between providers, bring their own API keys, and take advantage of features like streaming, vision, knowledge base with RAG, task scheduling, and more.
 
 ## Features
 
@@ -112,8 +112,8 @@ The bot uses an async SQLite database (via `aiosqlite`) with an automatic migrat
 1. **Clone and set up the environment:**
 
    ```bash
-   git clone https://github.com/sudoAlireza/GeminiBot.git
-   cd GeminiBot
+   git clone https://github.com/sudoAlireza/AnyAIChat.git
+   cd AnyAIChat
    python3 -m venv venv
    source venv/bin/activate
    pip install -r requirements.txt
@@ -174,9 +174,9 @@ The container includes a health check that runs every 60 seconds.
 1. **Clone and install:**
 
    ```bash
-   git clone https://github.com/sudoAlireza/GeminiBot.git
-   cd GeminiBot
-   python3 -m venv venv --prompt GeminiBot
+   git clone https://github.com/sudoAlireza/AnyAIChat.git
+   cd AnyAIChat
+   python3 -m venv venv --prompt AnyAIChat
    source venv/bin/activate
    pip install -r requirements.txt
    ```
@@ -193,13 +193,13 @@ The container includes a health check that runs every 60 seconds.
 4. **Create a Supervisor config file:**
 
    ```bash
-   sudo vim /etc/supervisor/conf.d/gemini_bot.conf
+   sudo vim /etc/supervisor/conf.d/anyaichat.conf
    ```
 
    Use this template (replace `<PROJECT_DIR>` with the actual path):
 
    ```ini
-   [program:gemini_bot]
+   [program:anyaichat]
    command=<PROJECT_DIR>/venv/bin/python3 <PROJECT_DIR>/main.py
    directory=<PROJECT_DIR>
    restarts=4
@@ -207,8 +207,8 @@ The container includes a health check that runs every 60 seconds.
    autorestart=true
    log_stderr=true
    log_stdout=true
-   stderr_logfile=/var/log/supervisor/gemini_bot.err.log
-   stdout_logfile=/var/log/supervisor/gemini_bot.out.log
+   stderr_logfile=/var/log/supervisor/anyaichat.err.log
+   stdout_logfile=/var/log/supervisor/anyaichat.out.log
    environment=TELEGRAM_BOT_TOKEN="...",GEMINI_API_TOKEN="...",AUTHORIZED_USER="...",LANGUAGE="en"
    ```
 
@@ -217,7 +217,7 @@ The container includes a health check that runs every 60 seconds.
    ```bash
    sudo supervisorctl reread
    sudo supervisorctl update
-   sudo supervisorctl start gemini_bot
+   sudo supervisorctl start anyaichat
    ```
 
 ## Running Tests
@@ -235,4 +235,4 @@ pytest
 - **More providers** — add support for additional AI providers via the plugin-based registry
 - **Group chat support** — allow the bot to participate in Telegram group conversations
 
-Feel free to share ideas or open issues and pull requests in the [GeminiBot](https://github.com/sudoAlireza/GeminiBot) GitHub repository.
+Feel free to share ideas or open issues and pull requests in the [AnyAIChat](https://github.com/sudoAlireza/AnyAIChat) GitHub repository.
