@@ -102,8 +102,12 @@ async def embed_texts(client, texts: List[str]) -> List[List[float]]:
             for emb in response.embeddings:
                 embeddings.append(list(emb.values))
         except Exception as e:
-            logger.error(f"Failed to embed batch {i}: {e}")
-            # Return zero vectors for failed batch
+            logger.error(f"Failed to embed batch {i} ({len(batch)} texts): {e}")
+            if not embeddings:
+                # First batch failed — no usable embeddings at all, raise
+                raise RuntimeError(f"Embedding failed: {e}") from e
+            # Partial failure: fill with zero vectors (skipped in similarity search)
+            logger.warning(f"Partial embedding failure: {len(batch)} chunks will be excluded from RAG")
             for _ in batch:
                 embeddings.append([0.0] * 768)
     return embeddings
@@ -130,7 +134,11 @@ async def find_relevant_chunks(
         return []
 
     # Embed the query
-    query_embeddings = await embed_texts(client, [query])
+    try:
+        query_embeddings = await embed_texts(client, [query])
+    except Exception as e:
+        logger.warning(f"Query embedding failed, returning top-k by position: {e}")
+        return chunks_with_embeddings[:top_k]
     if not query_embeddings or all(v == 0.0 for v in query_embeddings[0]):
         return chunks_with_embeddings[:top_k]
 

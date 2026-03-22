@@ -56,10 +56,10 @@ class RateLimiter:
         recent_minute = [ts for ts in timestamps if ts > one_minute_ago]
 
         if len(recent_minute) >= self.per_minute:
-            return recent_minute[0] - one_minute_ago
+            return max(0.0, recent_minute[0] - one_minute_ago)
 
         if len(timestamps) >= self.per_hour:
-            return timestamps[0] - (now - 3600)
+            return max(0.0, timestamps[0] - (now - 3600))
 
         return 0.0
 

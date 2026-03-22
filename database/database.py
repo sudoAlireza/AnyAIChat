@@ -506,10 +506,14 @@ async def create_table(pool: DatabasePool):
     """Run all pending migrations to bring the database schema up to date."""
     conn = await pool.get_connection()
     try:
+        # Acquire exclusive lock to prevent concurrent migration runs
+        await conn.execute("BEGIN EXCLUSIVE")
+
         current_version = await _get_schema_version(conn)
         target_version = len(MIGRATIONS)
 
         if current_version >= target_version:
+            await conn.commit()
             logger.info(f"Database schema is up to date (v{current_version})")
             return
 
@@ -1137,8 +1141,11 @@ async def update_conversation_resume(pool: DatabasePool, user_id, conv_id, resum
     )
 
 
-async def create_conversation_branch(pool: DatabasePool, user_id, source_conv_id, new_conv_id, title, history):
-    """Create a branched copy of a conversation."""
+async def create_conversation_branch(pool: DatabasePool, user_id, _source_conv_id, new_conv_id, title, history):
+    """Create a branched copy of a conversation.
+
+    _source_conv_id is accepted for future parent-tracking but not stored yet.
+    """
     sql = "INSERT INTO conversations(conv_id, user_id, title, history) VALUES(?,?,?,?)"
     return await pool.execute_insert(sql, (new_conv_id, user_id, f"[Branch] {title}", history))
 

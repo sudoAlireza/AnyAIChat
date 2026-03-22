@@ -6,6 +6,7 @@ and the provider-agnostic error hierarchy.
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -101,49 +102,56 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
         chat_session: ChatSession | None = context.user_data.get("chat_session")
 
         if not chat_session:
-            conv_id = context.user_data.get("conversation_id")
-            history: list[dict] = []
-            if conv_id:
-                conv_data = await select_conversation_by_id(pool, (user_id, conv_id))
-                if conv_data and conv_data.get("history"):
-                    history = json.loads(conv_data["history"])
+            # Prevent concurrent session creation from rapid messages
+            if "_session_lock" not in context.user_data:
+                context.user_data["_session_lock"] = asyncio.Lock()
+            async with context.user_data["_session_lock"]:
+                # Re-check after acquiring lock
+                chat_session = context.user_data.get("chat_session")
+                if not chat_session:
+                    conv_id = context.user_data.get("conversation_id")
+                    history: list[dict] = []
+                    if conv_id:
+                        conv_data = await select_conversation_by_id(pool, (user_id, conv_id))
+                        if conv_data and conv_data.get("history"):
+                            history = json.loads(conv_data["history"])
 
-            user_data = await get_user(pool, user_id)
+                    user_data = await get_user(pool, user_id)
 
-            # Provider and model are already hydrated in context by the @restricted decorator
-            provider_name = context.user_data.get("active_provider", "gemini")
-            model_name = context.user_data.get("model_name") or (user_data.get("model_name") if user_data else None)
-            system_instruction = (
-                user_data.get("system_instruction")
-                if user_data
-                else context.user_data.get("system_instruction")
-            )
-            pinned_context = user_data.get("pinned_context") if user_data else None
-            user_language = user_data.get("language", "auto") if user_data else "auto"
-            knowledge = await get_user_knowledge(pool, user_id)
+                    # Provider and model are already hydrated in context by the @restricted decorator
+                    provider_name = context.user_data.get("active_provider", "gemini")
+                    model_name = context.user_data.get("model_name") or (user_data.get("model_name") if user_data else None)
+                    system_instruction = (
+                        user_data.get("system_instruction")
+                        if user_data
+                        else context.user_data.get("system_instruction")
+                    )
+                    pinned_context = user_data.get("pinned_context") if user_data else None
+                    user_language = user_data.get("language", "auto") if user_data else "auto"
+                    knowledge = await get_user_knowledge(pool, user_id)
 
-            thinking_mode = user_data.get("thinking_mode", "off") if user_data else "off"
-            code_exec = user_data.get("code_execution", False) if user_data else False
+                    thinking_mode = user_data.get("thinking_mode", "off") if user_data else "off"
+                    code_exec = user_data.get("code_execution", False) if user_data else False
 
-            api_key = await get_api_key(context, user_id)
+                    api_key = await get_api_key(context, user_id)
 
-            chat_session = ChatSession(
-                provider_name=provider_name,
-                api_key=api_key,
-                model_name=model_name,
-                history=history,
-                system_instruction=system_instruction,
-                knowledge_base=knowledge,
-                pinned_context=pinned_context,
-                language=user_language,
-                pool=pool,
-                user_id=user_id,
-                thinking_mode=thinking_mode,
-                code_execution=code_exec,
-                web_search=bool(context.user_data.get("web_search")),
-            )
-            await chat_session.start_chat()
-            context.user_data["chat_session"] = chat_session
+                    chat_session = ChatSession(
+                        provider_name=provider_name,
+                        api_key=api_key,
+                        model_name=model_name,
+                        history=history,
+                        system_instruction=system_instruction,
+                        knowledge_base=knowledge,
+                        pinned_context=pinned_context,
+                        language=user_language,
+                        pool=pool,
+                        user_id=user_id,
+                        thinking_mode=thinking_mode,
+                        code_execution=code_exec,
+                        web_search=bool(context.user_data.get("web_search")),
+                    )
+                    await chat_session.start_chat()
+                    context.user_data["chat_session"] = chat_session
 
         # ---- Handle multimodal inputs ----
         image = None
@@ -157,6 +165,8 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
             await photo_file.download_to_memory(buf)
             buf.seek(0)
             image = PIL.Image.open(buf)
+            image.load()  # Force read so buffer can be released
+            buf.close()
             if not prompt:
                 prompt = "Describe this image"
 
@@ -287,6 +297,10 @@ async def reply_and_new_message(update: Update, context: ContextTypes.DEFAULT_TY
         response_text = response.text
         usage = response.usage
         grounding_sources = response.sources
+
+        # Warn user if file upload failed silently
+        if chat_session.last_user_message_metadata().get("file_upload_failed"):
+            response_text = "\u26a0\ufe0f _File could not be processed. Responding based on text only._\n\n" + response_text
 
         # Record token usage (including cached and thinking tokens)
         provider_name = chat_session.provider_name

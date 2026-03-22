@@ -121,6 +121,13 @@ class ChatSession:
     def get_history_length(self) -> int:
         return len(self._history)
 
+    def last_user_message_metadata(self) -> dict:
+        """Return metadata of the most recent user message, or empty dict."""
+        for msg in reversed(self._history):
+            if msg.role == "user":
+                return msg.metadata
+        return {}
+
     # ----- Session lifecycle -----
 
     async def start_chat(self, image: Any = None, file_path: str | None = None,
@@ -204,6 +211,7 @@ class ChatSession:
                     metadata["uploaded_file"] = uploaded
                 except Exception as e:
                     logger.error(f"Failed to upload file: {e}")
+                    metadata["file_upload_failed"] = True
 
         user_msg = ChatMessage(role="user", content=text or "", metadata=metadata)
         self._history.append(user_msg)
@@ -219,9 +227,12 @@ class ChatSession:
                 web_search=self.web_search,
                 cached_content=self._cached_content,
             )
-        except ProviderError:
-            raise
         except Exception as e:
+            # Remove user message from history on failure to prevent corruption
+            if self._history and self._history[-1] is user_msg:
+                self._history.pop()
+            if isinstance(e, ProviderError):
+                raise
             logger.error(f"Chat error: {e}")
             raise
 
@@ -264,6 +275,7 @@ class ChatSession:
                     metadata["uploaded_file"] = uploaded
                 except Exception as e:
                     logger.error(f"Failed to upload file: {e}")
+                    metadata["file_upload_failed"] = True
 
         user_msg = ChatMessage(role="user", content=text or "", metadata=metadata)
         self._history.append(user_msg)
@@ -280,9 +292,12 @@ class ChatSession:
                 web_search=self.web_search,
                 cached_content=self._cached_content,
             )
-        except ProviderError:
-            raise
         except Exception as e:
+            # Remove user message from history on failure to prevent corruption
+            if self._history and self._history[-1] is user_msg:
+                self._history.pop()
+            if isinstance(e, ProviderError):
+                raise
             logger.error(f"Streaming error: {e}")
             raise
 
@@ -417,10 +432,13 @@ class ChatSession:
                             api_key=gemini_key,
                             model_name="gemini-2.0-flash",
                         )
-                        await fallback.start_chat()
-                        parsed, _ = await fallback.one_shot_structured(instruction + prompt, PLAN_SCHEMA)
-                        if parsed and isinstance(parsed.get("plan"), list) and parsed["plan"]:
-                            return parsed
+                        try:
+                            await fallback.start_chat()
+                            parsed, _ = await fallback.one_shot_structured(instruction + prompt, PLAN_SCHEMA)
+                            if parsed and isinstance(parsed.get("plan"), list) and parsed["plan"]:
+                                return parsed
+                        finally:
+                            fallback.close()
             except Exception as fb_err:
                 logger.warning(f"Gemini fallback for plan also failed: {fb_err}")
 
