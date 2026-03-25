@@ -601,7 +601,8 @@ def _build_target_prompt(prompt: str, plan_json: str | None, last_delivered_day:
                 f"Overall topic: {prompt}\n\n"
                 f"Provide today's content in a clear, engaging format. "
                 f"{recap_instruction} "
-                f"End with a quick action item or reflection question."
+                f"End with a quick action item or reflection question.\n\n"
+                f"Also create 2 multiple-choice quiz questions about today's material, each with exactly 4 options."
             )
             return target_prompt, current_day, plan_total
         else:
@@ -611,9 +612,15 @@ def _build_target_prompt(prompt: str, plan_json: str | None, last_delivered_day:
         return prompt, None, None
 
 
-async def _generate_task_content(task_id: int, user_id: int, target_prompt: str, pool, user) -> tuple:
-    """Generate AI content for a task. Returns (response, chat) or (None, None) on failure."""
+async def _generate_task_content(task_id: int, user_id: int, target_prompt: str, pool, user, has_plan: bool = False) -> tuple:
+    """Generate AI content for a task. Returns (response, chat, quiz_data).
+
+    When has_plan is True, tries structured output first to get lesson + quiz.
+    Falls back to one_shot() (no quiz) on any structured output failure.
+    """
     from database.database import get_user_api_key, get_user_provider_settings
+    from schemas import LESSON_SCHEMA
+    from providers.base import ChatResponse
 
     provider_name = user.get('active_provider', 'gemini') if user else 'gemini'
     api_key = None
@@ -633,6 +640,7 @@ async def _generate_task_content(task_id: int, user_id: int, target_prompt: str,
     # Try generating AI response with retries
     response = None
     chat = None
+    quiz_data = []
     max_retries = 3
     retry_delay = 5
 
@@ -643,7 +651,20 @@ async def _generate_task_content(task_id: int, user_id: int, target_prompt: str,
                 web_search=bool(user.get('grounding')) if user else False,
             )
             await chat.start_chat()
-            response = await chat.one_shot(target_prompt)
+
+            if has_plan:
+                # Try structured output for lesson + quiz
+                try:
+                    parsed, usage = await chat.one_shot_structured(target_prompt, LESSON_SCHEMA)
+                    if parsed and parsed.get("lesson"):
+                        quiz_data = parsed.get("quiz", [])
+                        response = ChatResponse(text=parsed["lesson"], usage=usage)
+                    else:
+                        response = await chat.one_shot(target_prompt)
+                except Exception:
+                    response = await chat.one_shot(target_prompt)
+            else:
+                response = await chat.one_shot(target_prompt)
             break
         except Exception as e:
             logger.warning(f"Task {task_id} attempt {attempt}/{max_retries} failed ({provider_name}/{model_name}): {e}")
@@ -666,14 +687,26 @@ async def _generate_task_content(task_id: int, user_id: int, target_prompt: str,
                         web_search=bool(user.get('grounding')) if user else False,
                     )
                     await chat.start_chat()
-                    response = await chat.one_shot(target_prompt)
+
+                    if has_plan:
+                        try:
+                            parsed, usage = await chat.one_shot_structured(target_prompt, LESSON_SCHEMA)
+                            if parsed and parsed.get("lesson"):
+                                quiz_data = parsed.get("quiz", [])
+                                response = ChatResponse(text=parsed["lesson"], usage=usage)
+                            else:
+                                response = await chat.one_shot(target_prompt)
+                        except Exception:
+                            response = await chat.one_shot(target_prompt)
+                    else:
+                        response = await chat.one_shot(target_prompt)
                 except Exception as fb_err:
                     logger.error(f"Task {task_id}: Gemini fallback also failed: {fb_err}")
 
-    return response, chat
+    return response, chat, quiz_data
 
 
-async def _send_task_result(task_id, user_id, prompt, response, chat, days_passed, plan_total, task_hashtag, pool):
+async def _send_task_result(task_id, user_id, prompt, response, chat, days_passed, plan_total, task_hashtag, pool, quiz_data=None):
     """Send the generated task content to the user."""
     if response.usage and pool:
         await record_token_usage(
@@ -717,6 +750,25 @@ async def _send_task_result(task_id, user_id, prompt, response, chat, days_passe
     if last_sent and last_markup:
         pending = _application.bot_data.setdefault("pending_task_buttons", {})
         pending[user_id] = (last_sent.chat_id, last_sent.message_id)
+
+    # Send quiz polls after the lesson
+    for q in (quiz_data or []):
+        try:
+            options = q.get("options", [])
+            correct = q.get("correct", 0)
+            if len(options) < 2 or correct >= len(options):
+                continue
+            await _application.bot.send_poll(
+                chat_id=user_id,
+                question=q["question"][:300],
+                options=[o[:100] for o in options],
+                type="quiz",
+                correct_option_id=correct,
+                explanation=q.get("explanation", "")[:200],
+                is_anonymous=False,
+            )
+        except Exception as e:
+            logger.warning(f"Failed to send quiz poll: {e}")
 
 
 async def _run_task_delivery(task_id, user_id, prompt, plan_json, task_hashtag, pool):
@@ -762,7 +814,7 @@ async def _run_task_delivery(task_id, user_id, prompt, plan_json, task_hashtag, 
         return True
 
     user = await get_user(pool, user_id) if pool else None
-    response, chat = await _generate_task_content(task_id, user_id, target_prompt, pool, user)
+    response, chat, quiz_data = await _generate_task_content(task_id, user_id, target_prompt, pool, user, has_plan=bool(plan_json))
 
     if not response or not response.text:
         return False
@@ -771,7 +823,7 @@ async def _run_task_delivery(task_id, user_id, prompt, plan_json, task_hashtag, 
     if current_day is not None:
         await update_task_last_delivered_day(pool, task_id, current_day)
 
-    await _send_task_result(task_id, user_id, prompt, response, chat, current_day, plan_total, task_hashtag, pool)
+    await _send_task_result(task_id, user_id, prompt, response, chat, current_day, plan_total, task_hashtag, pool, quiz_data=quiz_data)
     return True
 
 

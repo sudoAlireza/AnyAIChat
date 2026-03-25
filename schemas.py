@@ -55,6 +55,34 @@ VOICE_COMMAND_SCHEMA = {
     "required": ["action", "parameters"],
 }
 
+LESSON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "lesson": {
+            "type": "string",
+            "description": "The full lesson content in markdown format",
+        },
+        "quiz": {
+            "type": "array",
+            "description": "2 multiple-choice questions about today's lesson",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "question": {"type": "string", "description": "The question (max 300 chars)"},
+                    "options": {
+                        "type": "array",
+                        "items": {"type": "string", "description": "Answer option (max 100 chars)"},
+                    },
+                    "correct": {"type": "integer", "description": "0-based index of the correct option"},
+                    "explanation": {"type": "string", "description": "Brief explanation (max 200 chars)"},
+                },
+                "required": ["question", "options", "correct", "explanation"],
+            },
+        },
+    },
+    "required": ["lesson", "quiz"],
+}
+
 REMINDER_SCHEMA = {
     "type": "object",
     "properties": {
