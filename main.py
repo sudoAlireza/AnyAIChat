@@ -443,7 +443,6 @@ async def post_init(application: Application):
     # Register bot commands with Telegram
     await application.bot.set_my_commands([
         BotCommand("start", "Open main menu"),
-        BotCommand("image", "Generate an image (use in conversation)"),
     ])
 
     # Store bot username for deep-link URLs
