@@ -601,8 +601,7 @@ def _build_target_prompt(prompt: str, plan_json: str | None, last_delivered_day:
                 f"Overall topic: {prompt}\n\n"
                 f"Provide today's content in a clear, engaging format. "
                 f"{recap_instruction} "
-                f"End with a quick action item or reflection question.\n\n"
-                f"Also create 2 multiple-choice quiz questions about today's material, each with exactly 4 options."
+                f"End with a quick action item or reflection question."
             )
             return target_prompt, current_day, plan_total
         else:
@@ -612,15 +611,35 @@ def _build_target_prompt(prompt: str, plan_json: str | None, last_delivered_day:
         return prompt, None, None
 
 
+async def _generate_quiz(chat: ChatSession, lesson_text: str) -> list:
+    """Generate quiz questions from lesson content via a separate structured call.
+
+    Returns a list of quiz dicts, or [] on any failure.
+    """
+    from schemas import QUIZ_SCHEMA
+
+    quiz_prompt = (
+        "Based on the following lesson, create 2 multiple-choice quiz questions. "
+        "Each question must have exactly 4 options.\n\n"
+        f"Lesson:\n{lesson_text}"
+    )
+    try:
+        parsed, _ = await chat.one_shot_structured(quiz_prompt, QUIZ_SCHEMA)
+        if parsed and isinstance(parsed.get("quiz"), list):
+            return parsed["quiz"]
+    except Exception as e:
+        logger.warning(f"Quiz generation failed: {e}")
+    return []
+
+
 async def _generate_task_content(task_id: int, user_id: int, target_prompt: str, pool, user, has_plan: bool = False) -> tuple:
     """Generate AI content for a task. Returns (response, chat, quiz_data).
 
-    When has_plan is True, tries structured output first to get lesson + quiz.
-    Falls back to one_shot() (no quiz) on any structured output failure.
+    Lesson is always generated via one_shot() (plain text, no output limits).
+    When has_plan is True, a second lightweight structured call generates quiz questions.
+    Quiz failure never blocks lesson delivery.
     """
     from database.database import get_user_api_key, get_user_provider_settings
-    from schemas import LESSON_SCHEMA
-    from providers.base import ChatResponse
 
     provider_name = user.get('active_provider', 'gemini') if user else 'gemini'
     api_key = None
@@ -651,20 +670,7 @@ async def _generate_task_content(task_id: int, user_id: int, target_prompt: str,
                 web_search=bool(user.get('grounding')) if user else False,
             )
             await chat.start_chat()
-
-            if has_plan:
-                # Try structured output for lesson + quiz
-                try:
-                    parsed, usage = await chat.one_shot_structured(target_prompt, LESSON_SCHEMA)
-                    if parsed and parsed.get("lesson"):
-                        quiz_data = parsed.get("quiz", [])
-                        response = ChatResponse(text=parsed["lesson"], usage=usage)
-                    else:
-                        response = await chat.one_shot(target_prompt)
-                except Exception:
-                    response = await chat.one_shot(target_prompt)
-            else:
-                response = await chat.one_shot(target_prompt)
+            response = await chat.one_shot(target_prompt)
             break
         except Exception as e:
             logger.warning(f"Task {task_id} attempt {attempt}/{max_retries} failed ({provider_name}/{model_name}): {e}")
@@ -687,21 +693,13 @@ async def _generate_task_content(task_id: int, user_id: int, target_prompt: str,
                         web_search=bool(user.get('grounding')) if user else False,
                     )
                     await chat.start_chat()
-
-                    if has_plan:
-                        try:
-                            parsed, usage = await chat.one_shot_structured(target_prompt, LESSON_SCHEMA)
-                            if parsed and parsed.get("lesson"):
-                                quiz_data = parsed.get("quiz", [])
-                                response = ChatResponse(text=parsed["lesson"], usage=usage)
-                            else:
-                                response = await chat.one_shot(target_prompt)
-                        except Exception:
-                            response = await chat.one_shot(target_prompt)
-                    else:
-                        response = await chat.one_shot(target_prompt)
+                    response = await chat.one_shot(target_prompt)
                 except Exception as fb_err:
                     logger.error(f"Task {task_id}: Gemini fallback also failed: {fb_err}")
+
+    # Generate quiz from lesson content (separate call, never blocks lesson)
+    if has_plan and response and response.text and chat:
+        quiz_data = await _generate_quiz(chat, response.text)
 
     return response, chat, quiz_data
 

@@ -55,16 +55,12 @@ VOICE_COMMAND_SCHEMA = {
     "required": ["action", "parameters"],
 }
 
-LESSON_SCHEMA = {
+QUIZ_SCHEMA = {
     "type": "object",
     "properties": {
-        "lesson": {
-            "type": "string",
-            "description": "The full lesson content in markdown format",
-        },
         "quiz": {
             "type": "array",
-            "description": "2 multiple-choice questions about today's lesson",
+            "description": "2 multiple-choice questions about the lesson",
             "items": {
                 "type": "object",
                 "properties": {
@@ -80,7 +76,7 @@ LESSON_SCHEMA = {
             },
         },
     },
-    "required": ["lesson", "quiz"],
+    "required": ["quiz"],
 }
 
 REMINDER_SCHEMA = {
