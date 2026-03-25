@@ -35,6 +35,7 @@ from handlers.states import (
     SHORTCUTS_INPUT, TAGS_INPUT, PINNED_CONTEXT_INPUT, TEMPLATES_MENU,
     BOOKMARKS_MENU, PROMPT_LIBRARY, PROMPT_ADD, BRIEFING_MENU,
     URL_MONITOR_MENU, URL_MONITOR_INPUT, MODEL_SEARCH_INPUT,
+    TASKS_CONTINUE_INPUT, TASKS_CONTINUE_DAYS,
 )
 from handlers.onboarding import start, handle_api_key, start_over, done
 from handlers.conversation import start_conversation, reply_and_new_message
@@ -62,6 +63,8 @@ from handlers.tasks import (
     handle_task_interval, back_to_time_handler, handle_task_plan_approval,
     list_tasks, view_task_handler, delete_task_handler,
     set_scheduler, schedule_task_job, retry_task_handler,
+    continue_task_focus_handler, continue_task_skip_handler,
+    continue_task_cancel_handler, continue_task_days_handler,
 )
 from handlers.reminders import (
     open_reminders_menu, start_add_reminder, handle_reminder_input,
@@ -286,6 +289,15 @@ def states():
         TASKS_CONFIRM_PLAN: [
             CallbackQueryHandler(handle_task_plan_approval, pattern="^Plan_"),
             CallbackQueryHandler(back_to_time_handler, pattern="^Back_To_Time$"),
+        ],
+        TASKS_CONTINUE_INPUT: [
+            MessageHandler(filters.TEXT & ~filters.COMMAND, continue_task_focus_handler),
+            CallbackQueryHandler(continue_task_skip_handler, pattern="^Continue_Skip$"),
+            CallbackQueryHandler(continue_task_cancel_handler, pattern="^Continue_Cancel$"),
+        ],
+        TASKS_CONTINUE_DAYS: [
+            CallbackQueryHandler(continue_task_days_handler, pattern="^CONT_DAYS_"),
+            CallbackQueryHandler(continue_task_cancel_handler, pattern="^Continue_Cancel$"),
         ],
         SETTINGS_MENU: [
             CallbackQueryHandler(open_models_menu, pattern="^open_models_menu$"),

@@ -388,8 +388,13 @@ class ChatSession:
             logger.warning(f"Failed to get chat title: {e}")
         return "New Conversation"
 
-    async def generate_plan(self, prompt: str, num_days: int = 30) -> dict:
-        """Generate a structured N-day learning plan."""
+    async def generate_plan(self, prompt: str, num_days: int = 30, previous_plan_context: str | None = None) -> dict:
+        """Generate a structured N-day learning plan.
+
+        Args:
+            previous_plan_context: Optional summary of a completed plan for continuation.
+                When provided, the new plan avoids repeating covered material.
+        """
         from schemas import PLAN_SCHEMA
         milestone_days = [num_days // 4, num_days // 2, 3 * num_days // 4, num_days]
         milestones_str = ", ".join(str(d) for d in milestone_days)
@@ -403,8 +408,17 @@ class ChatSession:
             "- Make titles concise but descriptive (3-6 words)\n"
             "- Make subjects actionable — describe what the user will DO that day, not just a topic name\n"
             f"- Add milestone/review days at day {milestones_str}\n\n"
-            "Topic: "
         )
+        if previous_plan_context:
+            instruction += (
+                "IMPORTANT — CONTINUATION PLAN:\n"
+                "The user has already completed a previous plan on this topic. "
+                "Do NOT repeat any of the material listed below. "
+                "Your new plan must build on this foundation — go deeper, cover more advanced topics, "
+                "or explore areas the user requested.\n\n"
+                f"{previous_plan_context}\n\n"
+            )
+        instruction += "Topic: "
         try:
             parsed, _ = await self.one_shot_structured(instruction + prompt, PLAN_SCHEMA)
             if parsed and isinstance(parsed.get("plan"), list) and parsed["plan"]:

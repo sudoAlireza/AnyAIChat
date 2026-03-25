@@ -523,6 +523,15 @@ async def m030_task_last_delivered_day(conn):
             pass
 
 
+@migration
+async def m031_task_parent_id(conn):
+    """v31: Add parent_task_id to tasks for continuation tracking."""
+    try:
+        await conn.execute("ALTER TABLE tasks ADD COLUMN parent_task_id INTEGER")
+    except Exception:
+        pass  # Column already exists
+
+
 async def _get_schema_version(conn) -> int:
     """Get current schema version, creating the tracking table if needed."""
     await conn.execute("""
@@ -678,15 +687,16 @@ async def delete_conversation_by_id(pool: DatabasePool, conversation):
 
 # --- Task Functions ---
 
-async def create_task(pool: DatabasePool, task):
+async def create_task(pool: DatabasePool, task, parent_task_id=None):
     """
     Create a new task.
     :param pool: DatabasePool
     :param task: (user_id, prompt, run_time, interval, plan_json, start_date, hashtag)
+    :param parent_task_id: optional ID of the completed parent task (for continuations)
     """
-    sql = """ INSERT INTO tasks(user_id, prompt, run_time, interval, plan_json, start_date, status, hashtag)
-              VALUES(?,?,?,?,?,?,'active',?) """
-    return await pool.execute_insert(sql, task)
+    sql = """ INSERT INTO tasks(user_id, prompt, run_time, interval, plan_json, start_date, status, hashtag, parent_task_id)
+              VALUES(?,?,?,?,?,?,'active',?,?) """
+    return await pool.execute_insert(sql, task + (parent_task_id,))
 
 
 async def get_all_tasks(pool: DatabasePool, batch_size: int = 100, offset: int = 0):
@@ -769,7 +779,7 @@ async def mark_task_completed(pool: DatabasePool, task_id: int):
 async def get_task_by_id(pool: DatabasePool, task_id: int):
     """Retrieve a single task by its ID."""
     row = await pool.execute_fetch_one(
-        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, hashtag, last_delivered_day FROM tasks WHERE id=?",
+        "SELECT id, user_id, prompt, run_time, interval, plan_json, start_date, hashtag, last_delivered_day, parent_task_id, status FROM tasks WHERE id=?",
         (task_id,),
     )
     if row:
@@ -783,6 +793,8 @@ async def get_task_by_id(pool: DatabasePool, task_id: int):
             "start_date": row["start_date"],
             "hashtag": row["hashtag"],
             "last_delivered_day": row["last_delivered_day"] or 0,
+            "parent_task_id": row["parent_task_id"],
+            "status": row["status"],
         }
     return None
 

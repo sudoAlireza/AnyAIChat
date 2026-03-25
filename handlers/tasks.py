@@ -15,6 +15,7 @@ from handlers.common import restricted, _, _get_pool, get_api_key, _safe_callbac
 from handlers.states import (
     TASKS_MENU, TASKS_ADD_PROMPT, TASKS_ADD_DAYS,
     TASKS_ADD_TIME, TASKS_ADD_INTERVAL, TASKS_CONFIRM_PLAN,
+    TASKS_CONTINUE_INPUT, TASKS_CONTINUE_DAYS,
 )
 from chat.session import ChatSession
 from database.database import (
@@ -121,6 +122,48 @@ def _build_plan_text(plan, prompt, run_time, interval, hashtag, num_days=None):
 
     text += "\n" + "━" * 25
     return text
+
+
+def _build_previous_plan_summary(plan_json: str) -> str:
+    """Build a concise summary of a completed plan for continuation context."""
+    try:
+        plan = json.loads(plan_json)
+        lines = []
+        for day in plan:
+            lines.append(f"- Day {day['day']}: \"{day['title']}\" — {day['subject']}")
+        return "\n".join(lines)
+    except (json.JSONDecodeError, KeyError):
+        return ""
+
+
+def _build_previous_titles_list(plan_json: str) -> str:
+    """Build a numbered list of day titles for display to the user."""
+    try:
+        plan = json.loads(plan_json)
+        lines = []
+        for day in plan:
+            lines.append(f"  {day['day']}. {day['title']}")
+        return "\n".join(lines)
+    except (json.JSONDecodeError, KeyError):
+        return ""
+
+
+def _build_continuation_hashtag(original_hashtag: str, existing_tags: set) -> str:
+    """Generate a continuation hashtag like #TopicPt2, #TopicPt3."""
+    base = original_hashtag.lstrip("#")
+    match = re.match(r'^(.+?)Pt(\d+)$', base)
+    if match:
+        base_name = match.group(1)
+        next_num = int(match.group(2)) + 1
+    else:
+        base_name = base
+        next_num = 2
+
+    tag = f"#{base_name}Pt{next_num}"
+    while tag.lower() in {t.lower() for t in existing_tags}:
+        next_num += 1
+        tag = f"#{base_name}Pt{next_num}"
+    return tag
 
 
 @restricted
@@ -361,6 +404,11 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
     await query.answer()
 
     if query.data == "Plan_Reject":
+        is_cont = context.user_data.pop("is_continuation", False)
+        if is_cont:
+            # Clean up continuation state
+            for k in ("continue_task_id", "continue_focus", "continue_task"):
+                context.user_data.pop(k, None)
         await query.edit_message_text(_("Plan rejected. Let's start over."), reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to Tasks Menu"), callback_data="Tasks_Menu")]]))
         return TASKS_MENU
 
@@ -369,6 +417,8 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
     run_time = context.user_data.get("task_time")
     interval = context.user_data.get("task_interval")
     plan_json = context.user_data.get("task_plan")
+    is_continuation = context.user_data.pop("is_continuation", False)
+    parent_task_id = context.user_data.pop("continue_task_id", None) if is_continuation else None
 
     now = datetime.now()
     run_hour, run_minute = map(int, run_time.split(":"))
@@ -383,10 +433,19 @@ async def handle_task_plan_approval(update: Update, context: ContextTypes.DEFAUL
     # Use AI-generated hashtag from plan generation, fallback to keyword-based
     hashtag = context.user_data.get("task_hashtag", "")
     existing_tags = await get_user_task_hashtags(pool, user_id)
+    if is_continuation and parent_task_id:
+        # For continuations, build hashtag from original (e.g. #TopicPt2)
+        parent_task = context.user_data.pop("continue_task", None)
+        original_hashtag = parent_task.get("hashtag", "") if parent_task else ""
+        if original_hashtag:
+            hashtag = _build_continuation_hashtag(original_hashtag, existing_tags)
     if not hashtag or hashtag.lower() in {t.lower() for t in existing_tags}:
         hashtag = _generate_hashtag(prompt, existing_tags)
 
-    task_id = await create_task(pool, (user_id, prompt, run_time, interval, plan_json, start_date, hashtag))
+    # Clean up remaining continuation state
+    context.user_data.pop("continue_focus", None)
+
+    task_id = await create_task(pool, (user_id, prompt, run_time, interval, plan_json, start_date, hashtag), parent_task_id=parent_task_id)
 
     schedule_task_job(task_id, user_id, prompt, run_time, interval, plan_json, start_date, hashtag)
 
@@ -519,13 +578,29 @@ def _build_target_prompt(prompt: str, plan_json: str | None, last_delivered_day:
         elif day_item:
             phase = day_item.get('phase', '')
             phase_info = f" Phase: {phase}." if phase else ""
+
+            # Build recap from previous day's plan entry (no extra API call)
+            if current_day == 1:
+                recap_instruction = "This is the first lesson, so no recap is needed."
+            else:
+                prev_item = next((item for item in plan if item['day'] == current_day - 1), None)
+                if prev_item:
+                    recap_instruction = (
+                        f"Start with a brief recap of yesterday's lesson (Day {current_day - 1}). "
+                        f"Yesterday's title was: \"{prev_item['title']}\" "
+                        f"and the goal was: \"{prev_item['subject']}\". "
+                        f"Write an accurate recap based on this, then deliver today's material."
+                    )
+                else:
+                    recap_instruction = "Start with a brief recap connection to yesterday, then deliver today's material."
+
             target_prompt = (
                 f"You are delivering Day {current_day}/{plan_total} of a structured learning plan.{phase_info}\n"
                 f"Today's title: {day_item['title']}\n"
                 f"Today's goal: {day_item['subject']}\n"
                 f"Overall topic: {prompt}\n\n"
                 f"Provide today's content in a clear, engaging format. "
-                f"Start with a brief recap connection to yesterday, then deliver today's material. "
+                f"{recap_instruction} "
                 f"End with a quick action item or reflection question."
             )
             return target_prompt, current_day, plan_total
@@ -668,10 +743,21 @@ async def _run_task_delivery(task_id, user_id, prompt, plan_json, task_hashtag, 
             except Exception:
                 pass
         plan = json.loads(plan_json) if plan_json else []
+        bot_username = _application.bot_data.get("bot_username", "")
+        buttons = []
+        if bot_username:
+            continue_url = f"https://t.me/{bot_username}?start=continue_{task_id}"
+            buttons.append([InlineKeyboardButton("🎓 Continue Learning", url=continue_url)])
+        keyboard = InlineKeyboardMarkup(buttons) if buttons else None
         await _application.bot.send_message(
             chat_id=user_id,
-            text=f"🎉 *Plan Complete!* {task_hashtag}\nYour {len(plan)}-day plan on _{prompt[:40]}_ has finished.",
+            text=(
+                f"🎉 *Plan Complete!* {task_hashtag}\n"
+                f"Your {len(plan)}-day plan on _{prompt[:40]}_ has finished.\n\n"
+                f"Want to keep going? Tap below to create a continuation plan."
+            ),
             parse_mode=ParseMode.MARKDOWN,
+            reply_markup=keyboard,
         )
         return True
 
@@ -804,3 +890,160 @@ async def retry_task_handler(update, context):
         await query.edit_message_text(f"✅ {task_hashtag}{day_info} — content delivered.", parse_mode=ParseMode.MARKDOWN)
     except BadRequest:
         pass
+
+
+# --- Task Continuation Handlers ---
+
+
+@restricted
+async def continue_task_focus_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle user's focus text input for task continuation."""
+    focus_text = update.message.text.strip()
+    context.user_data["continue_focus"] = focus_text
+
+    keyboard = [
+        [
+            InlineKeyboardButton("7 days", callback_data="CONT_DAYS_7"),
+            InlineKeyboardButton("14 days", callback_data="CONT_DAYS_14"),
+        ],
+        [
+            InlineKeyboardButton("21 days", callback_data="CONT_DAYS_21"),
+            InlineKeyboardButton("30 days", callback_data="CONT_DAYS_30"),
+        ],
+        [InlineKeyboardButton(_("❌ Cancel"), callback_data="Continue_Cancel")],
+    ]
+    await update.message.reply_text(
+        _("How many days for the continuation plan?"),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return TASKS_CONTINUE_DAYS
+
+
+@restricted
+async def continue_task_skip_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle 'Skip' — default to general advanced continuation."""
+    query = update.callback_query
+    await query.answer()
+    context.user_data["continue_focus"] = None
+
+    keyboard = [
+        [
+            InlineKeyboardButton("7 days", callback_data="CONT_DAYS_7"),
+            InlineKeyboardButton("14 days", callback_data="CONT_DAYS_14"),
+        ],
+        [
+            InlineKeyboardButton("21 days", callback_data="CONT_DAYS_21"),
+            InlineKeyboardButton("30 days", callback_data="CONT_DAYS_30"),
+        ],
+        [InlineKeyboardButton(_("❌ Cancel"), callback_data="Continue_Cancel")],
+    ]
+    await query.edit_message_text(
+        _("How many days for the continuation plan?"),
+        reply_markup=InlineKeyboardMarkup(keyboard),
+    )
+    return TASKS_CONTINUE_DAYS
+
+
+@restricted
+async def continue_task_cancel_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Cancel the continuation flow."""
+    query = update.callback_query
+    await query.answer()
+    # Clean up continuation state
+    for k in ("continue_task_id", "continue_focus", "continue_task", "is_continuation"):
+        context.user_data.pop(k, None)
+    await query.edit_message_text(
+        _("Continuation cancelled."),
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton(_("🔙 Back to menu"), callback_data="Start_Again")]]),
+    )
+    return TASKS_MENU
+
+
+@restricted
+async def continue_task_days_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
+    """Handle day count selection — generate continuation plan and show preview."""
+    query = update.callback_query
+    await query.answer()
+
+    # Parse days from callback data (e.g. "CONT_DAYS_14")
+    try:
+        num_days = int(query.data.split("_")[-1])
+    except (ValueError, IndexError):
+        return TASKS_CONTINUE_DAYS
+
+    parent_task = context.user_data.get("continue_task")
+    if not parent_task:
+        await query.edit_message_text(_("Session expired. Please try again from the completion message."))
+        return TASKS_MENU
+
+    prompt = parent_task["prompt"]
+    focus_text = context.user_data.get("continue_focus")
+    plan_json = parent_task.get("plan_json", "")
+
+    # Build context for AI: previous plan summary + user's focus direction
+    prev_summary = _build_previous_plan_summary(plan_json)
+    if focus_text:
+        previous_plan_context = (
+            f"Previously covered material:\n{prev_summary}\n\n"
+            f"User's direction for this continuation: \"{focus_text}\""
+        )
+    else:
+        previous_plan_context = (
+            f"Previously covered material:\n{prev_summary}\n\n"
+            f"User's direction: Continue with more advanced and deeper content."
+        )
+
+    await query.edit_message_text(_("Generating continuation plan..."))
+
+    # Get API key and provider
+    user_id = update.effective_user.id
+    api_key = await get_api_key(context, user_id)
+    provider_name = context.user_data.get("active_provider", "gemini")
+    model_name = context.user_data.get("model_name")
+    chat = ChatSession(provider_name=provider_name, api_key=api_key, model_name=model_name)
+    await chat.start_chat()
+
+    try:
+        parsed = await chat.generate_plan(prompt, num_days=num_days, previous_plan_context=previous_plan_context)
+        plan = parsed.get("plan", [])
+        if not isinstance(plan, list) or not plan:
+            raise ValueError("Invalid plan")
+    except Exception as e:
+        logger.error(f"Continuation plan generation failed: {e}")
+        keyboard = [
+            [InlineKeyboardButton(_("🔄 Try Again"), callback_data="CONT_DAYS_" + str(num_days))],
+            [InlineKeyboardButton(_("❌ Cancel"), callback_data="Continue_Cancel")],
+        ]
+        await query.edit_message_text(
+            _("Failed to generate continuation plan. Please try again."),
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+        return TASKS_CONTINUE_DAYS
+
+    # Store plan data for approval (reuse existing plan approval flow)
+    run_time = parent_task["run_time"]
+    interval = parent_task["interval"]
+    context.user_data["task_prompt"] = prompt
+    context.user_data["task_time"] = run_time
+    context.user_data["task_interval"] = interval
+    context.user_data["task_plan"] = json.dumps(plan)
+    context.user_data["task_days"] = num_days
+    context.user_data["task_hashtag"] = ""  # Will be built from parent in approval
+    context.user_data["is_continuation"] = True
+
+    # Build preview hashtag for display
+    pool = _get_pool(context)
+    existing_tags = await get_user_task_hashtags(pool, user_id)
+    preview_hashtag = _build_continuation_hashtag(parent_task.get("hashtag", ""), existing_tags)
+
+    text = _build_plan_text(plan, prompt, run_time, interval, preview_hashtag, num_days)
+    text += _("\n\nDo you approve this continuation plan?")
+    keyboard = [
+        [InlineKeyboardButton(_("✅ Approve"), callback_data="Plan_Approve")],
+        [InlineKeyboardButton(_("❌ Reject"), callback_data="Plan_Reject")],
+    ]
+    try:
+        await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode=ParseMode.MARKDOWN)
+    except BadRequest:
+        await query.edit_message_text(strip_markdown(text), reply_markup=InlineKeyboardMarkup(keyboard))
+    return TASKS_CONFIRM_PLAN

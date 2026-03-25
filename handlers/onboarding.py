@@ -20,6 +20,7 @@ from handlers.states import (
     CHOOSING,
     CONVERSATION,
     API_KEY_INPUT,
+    TASKS_CONTINUE_INPUT,
 )
 from chat.session import ChatSession
 from database.database import (
@@ -134,6 +135,49 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> int:
                     return CONVERSATION
         except (ValueError, IndexError, json.JSONDecodeError) as e:
             logger.error(f"Failed to handle discuss deep-link: {e}")
+
+    # Handle deep-link: /start continue_{task_id}
+    if context.args and context.args[0].startswith("continue_"):
+        try:
+            dl_task_id = int(context.args[0].split("_", 1)[1])
+            task = await get_task_by_id(pool, dl_task_id)
+            if task and task["user_id"] == user_id and task.get("status") == "completed":
+                from handlers.tasks import _build_previous_titles_list
+                titles_list = _build_previous_titles_list(task.get("plan_json", ""))
+                context.user_data["continue_task_id"] = dl_task_id
+                context.user_data["continue_task"] = task
+                context.user_data["is_continuation"] = True
+
+                text = (
+                    f"📋 *Your completed plan covered:*\n\n"
+                    f"{titles_list}\n\n"
+                    f"What would you like the next plan to focus on?\n"
+                    f"You can ask for more advanced content, deep-dive into specific "
+                    f"topics above, or explore related areas.\n\n"
+                    f"_Type your preference, or tap Skip for a general advanced continuation._"
+                )
+                keyboard = [
+                    [InlineKeyboardButton(_("⏭ Skip"), callback_data="Continue_Skip")],
+                    [InlineKeyboardButton(_("❌ Cancel"), callback_data="Continue_Cancel")],
+                ]
+                try:
+                    await update.message.reply_text(
+                        text,
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+                except BadRequest:
+                    await update.message.reply_text(
+                        strip_markdown(text),
+                        reply_markup=InlineKeyboardMarkup(keyboard),
+                    )
+                return TASKS_CONTINUE_INPUT
+            elif task and task.get("status") != "completed":
+                await update.message.reply_text(_("This task is still active."))
+            else:
+                await update.message.reply_text(_("Task not found."))
+        except (ValueError, IndexError) as e:
+            logger.error(f"Failed to handle continue deep-link: {e}")
 
     keyboard = [
         [
